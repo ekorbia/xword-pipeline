@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fill-engine:
+    name: fill-engine (Rust)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: fill-engine
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fill-engine
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy (deny warnings)
+        run: cargo clippy --workspace --release -- -D warnings
+
+      - name: cargo build (release)
+        run: cargo build --workspace --release
+
+      - name: cargo test
+        run: cargo test --workspace --release
+
+  clue-writer:
+    name: clue-writer (TypeScript)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: clue-writer
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: clue-writer/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck

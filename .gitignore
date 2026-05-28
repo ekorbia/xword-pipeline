@@ -1,0 +1,13 @@
+# generated artifacts
+out/
+
+# rust
+fill-engine/target/
+
+# node
+clue-writer/node_modules/
+
+# misc
+.DS_Store
+*.log
+.env

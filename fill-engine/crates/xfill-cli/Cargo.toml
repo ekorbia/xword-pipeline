@@ -1,0 +1,12 @@
+[package]
+name = "xfill-cli"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "xfill"
+path = "src/main.rs"
+
+[dependencies]
+xfill-core = { path = "../xfill-core" }

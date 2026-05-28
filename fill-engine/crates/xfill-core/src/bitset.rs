@@ -1,0 +1,198 @@
+//! Fixed-size bitset over word indices. Hot path of the solver: `and_assign`
+//! for constraint propagation, `count_ones` for MRV, `iter_ones` for
+//! score-ordered candidate enumeration.
+
+#[derive(Clone, Debug)]
+pub struct Bitset {
+    words: Box<[u64]>,
+    nbits: usize,
+}
+
+impl Bitset {
+    pub fn zeros(nbits: usize) -> Self {
+        let nwords = nbits.div_ceil(64);
+        Bitset {
+            words: vec![0u64; nwords].into_boxed_slice(),
+            nbits,
+        }
+    }
+
+    pub fn ones(nbits: usize) -> Self {
+        let nwords = nbits.div_ceil(64);
+        let mut words = vec![u64::MAX; nwords].into_boxed_slice();
+        // clear the tail bits beyond nbits in the last word
+        let rem = nbits % 64;
+        if rem != 0 {
+            words[nwords - 1] = (1u64 << rem) - 1;
+        }
+        Bitset { words, nbits }
+    }
+
+    #[inline]
+    pub fn nbits(&self) -> usize {
+        self.nbits
+    }
+
+    #[inline]
+    pub fn get(&self, i: usize) -> bool {
+        (self.words[i >> 6] >> (i & 63)) & 1 == 1
+    }
+
+    #[inline]
+    pub fn set(&mut self, i: usize) {
+        self.words[i >> 6] |= 1u64 << (i & 63);
+    }
+
+    #[inline]
+    pub fn clear(&mut self, i: usize) {
+        self.words[i >> 6] &= !(1u64 << (i & 63));
+    }
+
+    /// self &= other
+    #[inline]
+    pub fn and_assign(&mut self, other: &Bitset) {
+        for (a, b) in self.words.iter_mut().zip(other.words.iter()) {
+            *a &= *b;
+        }
+    }
+
+    /// self &= !other
+    #[inline]
+    pub fn andnot_assign(&mut self, other: &Bitset) {
+        for (a, b) in self.words.iter_mut().zip(other.words.iter()) {
+            *a &= !*b;
+        }
+    }
+
+    #[inline]
+    pub fn count_ones(&self) -> u32 {
+        self.words.iter().map(|w| w.count_ones()).sum()
+    }
+
+    /// Number of set bits whose index is < `limit` (for score-tier counting).
+    pub fn count_ones_below(&self, limit: usize) -> u32 {
+        if limit >= self.nbits {
+            return self.count_ones();
+        }
+        let full = limit >> 6;
+        let mut c = 0u32;
+        for w in &self.words[..full] {
+            c += w.count_ones();
+        }
+        let rem = limit & 63;
+        if rem != 0 {
+            let mask = (1u64 << rem) - 1;
+            c += (self.words[full] & mask).count_ones();
+        }
+        c
+    }
+
+    #[inline]
+    pub fn copy_from(&mut self, other: &Bitset) {
+        debug_assert_eq!(self.words.len(), other.words.len());
+        self.words.copy_from_slice(&other.words);
+    }
+
+    /// Iterate set-bit indices in ascending order (i.e. by score, since words
+    /// are sorted by score descending → index 0 is best).
+    pub fn iter_ones(&self) -> OnesIter<'_> {
+        OnesIter {
+            words: &self.words,
+            word_idx: 0,
+            cur: if self.words.is_empty() {
+                0
+            } else {
+                self.words[0]
+            },
+        }
+    }
+}
+
+pub struct OnesIter<'a> {
+    words: &'a [u64],
+    word_idx: usize,
+    cur: u64,
+}
+
+impl Iterator for OnesIter<'_> {
+    type Item = usize;
+    #[inline]
+    fn next(&mut self) -> Option<usize> {
+        loop {
+            if self.cur != 0 {
+                let bit = self.cur.trailing_zeros() as usize;
+                self.cur &= self.cur - 1; // clear lowest set bit
+                return Some(self.word_idx * 64 + bit);
+            }
+            self.word_idx += 1;
+            if self.word_idx >= self.words.len() {
+                return None;
+            }
+            self.cur = self.words[self.word_idx];
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ones_zeros_count() {
+        assert_eq!(Bitset::zeros(100).count_ones(), 0);
+        assert_eq!(Bitset::ones(100).count_ones(), 100);
+        assert_eq!(Bitset::ones(64).count_ones(), 64);
+        assert_eq!(Bitset::ones(65).count_ones(), 65);
+    }
+
+    #[test]
+    fn set_get_clear() {
+        let mut b = Bitset::zeros(200);
+        b.set(0);
+        b.set(63);
+        b.set(64);
+        b.set(199);
+        assert!(b.get(0) && b.get(63) && b.get(64) && b.get(199));
+        assert!(!b.get(1));
+        assert_eq!(b.count_ones(), 4);
+        b.clear(63);
+        assert!(!b.get(63));
+        assert_eq!(b.count_ones(), 3);
+    }
+
+    #[test]
+    fn and_andnot() {
+        let mut a = Bitset::ones(128);
+        let mut mask = Bitset::zeros(128);
+        mask.set(1);
+        mask.set(100);
+        a.and_assign(&mask);
+        assert_eq!(a.count_ones(), 2);
+        assert!(a.get(1) && a.get(100));
+
+        let mut c = Bitset::ones(128);
+        c.andnot_assign(&mask);
+        assert_eq!(c.count_ones(), 126);
+        assert!(!c.get(1) && !c.get(100));
+    }
+
+    #[test]
+    fn iter_in_order() {
+        let mut b = Bitset::zeros(200);
+        for i in [3usize, 64, 65, 130, 199] {
+            b.set(i);
+        }
+        let got: Vec<usize> = b.iter_ones().collect();
+        assert_eq!(got, vec![3, 64, 65, 130, 199]);
+    }
+
+    #[test]
+    fn count_below() {
+        let mut b = Bitset::ones(200);
+        assert_eq!(b.count_ones_below(50), 50);
+        assert_eq!(b.count_ones_below(64), 64);
+        assert_eq!(b.count_ones_below(200), 200);
+        b.clear(10);
+        assert_eq!(b.count_ones_below(50), 49);
+    }
+}
