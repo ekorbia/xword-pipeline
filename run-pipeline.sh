@@ -52,8 +52,12 @@ Usage: run-pipeline.sh [options]
   --top N                   Keep the best N grids in the library (default: 20)
   --grid N                  Which library grid to clue (default: 0 = best)
   --day DAY                 Monday..Saturday, or Easy/Medium/Tricky/Hard/Expert (default: mode-based)
-  --tiers easy,medium,hard  Multi-tier: write a clue set per tier on the SAME grid (overrides --day).
-                            QA + --explain run against the medium tier (or the first listed).
+  --tiers easy,medium,hard[,expert]
+                            Multi-tier: write a clue set per tier on the SAME grid (overrides --day).
+                            Each tier is day-calibrated (easy=Monday, medium=Wednesday,
+                            hard=Friday, expert=Saturday) and QA runs against each tier
+                            independently. --explain still runs once against the medium
+                            (or first listed) tier — explanations are tier-agnostic.
   --explain                 Also run the post-solve explainer (feeds the player as --explanations).
   --no-qa                   Skip the editorial QA step (saves a Claude call).
   -h, --help                Show this help
@@ -90,8 +94,8 @@ if [[ -n "$TIERS" ]]; then
   IFS=',' read -ra _TIERS_PRECHECK <<< "$TIERS"
   for tier in "${_TIERS_PRECHECK[@]}"; do
     case "$tier" in
-      easy|medium|hard) ;;
-      *) echo "error: --tiers values must be easy, medium, or hard (got '$tier')" >&2; exit 2 ;;
+      easy|medium|hard|expert) ;;
+      *) echo "error: --tiers values must be easy, medium, hard, or expert (got '$tier')" >&2; exit 2 ;;
     esac
   done
 fi
@@ -155,11 +159,12 @@ if [[ -z "${ANTHROPIC_API_KEY:-}" ]]; then
   exit 1
 fi
 
-QA="$OUT/puzzles/${NAME}.qa.json"
 EXPLAINED="$OUT/puzzles/${NAME}.explained.json"
-PRIMARY_CLUED=""                 # the clued file QA + explain run against
+PRIMARY_CLUED=""                 # the clued file explain runs against (medium / first listed)
 CLUED_LINES=()                   # human summary lines
-IMPORT_TIER_FLAGS=()             # `--easy/--medium/--hard FILE` flags for the import hint
+IMPORT_TIER_FLAGS=()             # `--easy/--medium/--hard/--expert FILE` flags for the import hint
+QA_TARGETS=()                    # (label, clued, qaOut) triples flattened: 3 entries per QA job
+QA_FILE_PRIMARY="$OUT/puzzles/${NAME}.qa.json"   # single-tier path (kept for compat)
 
 # ---- clue writing: single-tier (default) or multi-tier (--tiers, parallel) ----
 if [[ -n "$TIERS" ]]; then
@@ -208,13 +213,33 @@ else
   CLUED_LINES+=("  puzzle  : $PRIMARY_CLUED")
 fi
 
-# ---- QA + explain (both depend only on PRIMARY_CLUED → run in parallel) ----
+# ---- QA + explain (run in parallel) ----
+# QA: in multi-tier mode, review EVERY tier file (each carries its own day
+# calibration in the JSON), not just the primary. In single-tier mode, QA the
+# only clued file.
+# Explain: always runs once against PRIMARY_CLUED — explanations are
+# tier-agnostic (they explain why the answer fits, not why the clue is hard).
 declare -a _POST_PIDS=()
 declare -a _POST_LABELS=()
+declare -a _QA_OUTPUTS=()        # parallel arrays for per-tier verdict summary
+declare -a _QA_LABELS=()
 if [[ "$NO_QA" -eq 0 ]]; then
-  echo "==> editorial QA (Claude) on $(basename "$PRIMARY_CLUED") [parallel]"
-  ( cd "$CLUE" && npx --yes tsx src/qaCli.ts "$PRIMARY_CLUED" --out "$QA" ) &
-  _POST_PIDS+=("$!"); _POST_LABELS+=("QA")
+  if [[ -n "$TIERS" ]]; then
+    for i in "${!_TIER_NAMES[@]}"; do
+      tier="${_TIER_NAMES[$i]}"
+      tier_clued="${_TIER_FILES[$i]}"
+      tier_qa="$OUT/puzzles/${NAME}.qa.${tier}.json"
+      echo "==> editorial QA (Claude) [${tier}] on $(basename "$tier_clued") [parallel]"
+      ( cd "$CLUE" && npx --yes tsx src/qaCli.ts "$tier_clued" --out "$tier_qa" ) &
+      _POST_PIDS+=("$!"); _POST_LABELS+=("QA[${tier}]")
+      _QA_OUTPUTS+=("$tier_qa"); _QA_LABELS+=("$tier")
+    done
+  else
+    echo "==> editorial QA (Claude) on $(basename "$PRIMARY_CLUED") [parallel]"
+    ( cd "$CLUE" && npx --yes tsx src/qaCli.ts "$PRIMARY_CLUED" --out "$QA_FILE_PRIMARY" ) &
+    _POST_PIDS+=("$!"); _POST_LABELS+=("QA")
+    _QA_OUTPUTS+=("$QA_FILE_PRIMARY"); _QA_LABELS+=("primary")
+  fi
 fi
 if [[ "$EXPLAIN" -eq 1 ]]; then
   echo "==> post-solve explanations (Claude) on $(basename "$PRIMARY_CLUED") [parallel]"
@@ -227,9 +252,22 @@ for i in "${!_POST_PIDS[@]}"; do
   label="${_POST_LABELS[$i]}"
   if ! wait "$pid"; then echo "warning: $label step failed" >&2; POST_FAIL=1; fi
 done
-VERDICT=""
-if [[ "$NO_QA" -eq 0 && -f "$QA" ]]; then
-  VERDICT=$(grep -o '"verdict": *"[^"]*"' "$QA" | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+
+# Read every QA verdict (if QA ran). Track "worst" — any non-ready verdict
+# is surfaced in the summary as a hint to revise.
+declare -a _QA_VERDICTS=()
+WORST_VERDICT="ready"     # ready < revise_clues < regenerate_grid (loose ordering)
+qa_rank() { case "$1" in ready) echo 0;; revise_clues) echo 1;; regenerate_grid) echo 2;; *) echo 1;; esac; }
+if [[ "$NO_QA" -eq 0 ]]; then
+  for i in "${!_QA_OUTPUTS[@]}"; do
+    qf="${_QA_OUTPUTS[$i]}"
+    v=""
+    if [[ -f "$qf" ]]; then
+      v=$(grep -o '"verdict": *"[^"]*"' "$qf" | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+    fi
+    _QA_VERDICTS+=("${v:-unknown}")
+    if [[ -n "$v" ]] && (( $(qa_rank "$v") > $(qa_rank "$WORST_VERDICT") )); then WORST_VERDICT="$v"; fi
+  done
 fi
 
 # ---- summary + suggested import command ----
@@ -237,7 +275,15 @@ echo ""
 echo "================= pipeline complete ================="
 echo "  library : $LIB"
 for line in "${CLUED_LINES[@]}"; do echo "$line"; done
-[[ "$NO_QA" -eq 0 ]] && echo "  QA      : $QA   (verdict: ${VERDICT:-unknown})"
+if [[ "$NO_QA" -eq 0 ]]; then
+  if [[ -n "$TIERS" ]]; then
+    for i in "${!_QA_OUTPUTS[@]}"; do
+      echo "  QA[${_QA_LABELS[$i]}] : ${_QA_OUTPUTS[$i]}   (verdict: ${_QA_VERDICTS[$i]})"
+    done
+  else
+    echo "  QA      : ${_QA_OUTPUTS[0]}   (verdict: ${_QA_VERDICTS[0]:-unknown})"
+  fi
+fi
 [[ "$EXPLAIN" -eq 1 ]] && echo "  explain : $EXPLAINED"
 echo "-----------------------------------------------------"
 echo "  to import (run from xword-player):"
@@ -248,10 +294,22 @@ else
 fi
 [[ "$EXPLAIN" -eq 1 ]] && IMPORT_CMD+=("--explanations" "../xword-pipeline/out/puzzles/$(basename "$EXPLAINED")")
 echo "    ${IMPORT_CMD[*]}"
-if [[ "$NO_QA" -eq 0 && "$VERDICT" != "ready" ]]; then
+if [[ "$NO_QA" -eq 0 && "$WORST_VERDICT" != "ready" ]]; then
   echo ""
-  echo "  Not 'ready'? Fix findings — see README.md → 'Fixing QA findings'."
-  echo "  Clue-level:  (cd clue-writer && npm run clue -- $PRIMARY_CLUED --revise $QA)"
+  echo "  Not all tiers 'ready'? Fix findings — see README.md → 'Fixing QA findings'."
+  if [[ -n "$TIERS" ]]; then
+    echo "  Each per-tier QA file pairs 1:1 with its clued.<tier>.json — revise that tier's clues:"
+    for i in "${!_QA_LABELS[@]}"; do
+      if [[ "${_QA_VERDICTS[$i]}" != "ready" ]]; then
+        tier="${_QA_LABELS[$i]}"
+        tier_clued="${_TIER_FILES[$i]}"
+        tier_qa="${_QA_OUTPUTS[$i]}"
+        echo "    [$tier] (cd clue-writer && npm run clue -- $tier_clued --revise $tier_qa)"
+      fi
+    done
+  else
+    echo "  Clue-level:  (cd clue-writer && npm run clue -- $PRIMARY_CLUED --revise ${_QA_OUTPUTS[0]})"
+  fi
   echo "  Grid-level:  re-run with --grid $((GRID+1)), or stricter --keep-mean / --max-iffy 0."
 fi
 # Propagate any parallel-step failure as the script's exit code.

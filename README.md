@@ -188,42 +188,39 @@ cd .. && ./run-pipeline.sh --mode themed --themes <A>,<B>,<C>
 
 ## Multi-difficulty puzzles & post-solve explanations
 
-The player can take a single puzzle that carries **three clue sets** (Easy /
-Medium / Hard) plus an optional **one-line explanation** per answer, so the
-solver picks a difficulty and gets a short "why this fits" note after solving.
-Produce that bundle by running the clue writer once per tier on the **same
-library grid**, then the explainer, then merge in the player's `import-puzzle`:
+The player can take a single puzzle that carries **up to four clue sets**
+(Easy / Medium / Hard / Expert) plus an optional **one-line explanation** per
+answer, so the solver picks a difficulty and gets a short "why this fits" note
+after solving. Each tier is day-calibrated:
+
+| Tier   | Day calibration |
+|--------|------------------|
+| easy   | Monday           |
+| medium | Wednesday        |
+| hard   | Friday           |
+| expert | Saturday         |
+
+`run-pipeline.sh --tiers` does the whole thing in one command. **In multi-tier
+mode, QA reviews each tier independently** against its own day rubric, so a
+"too easy for Saturday" finding from QA on the expert tier is meaningful (it
+sees expert clues calibrated to Saturday). Per-tier outputs land at
+`out/puzzles/${name}.qa.${tier}.json`.
 
 ```bash
-# 1. Build the grid library once (free)
-./run-pipeline.sh --mode themeless --day Easy   # produces the library; clue+qa run for Easy too
+# All four tiers + post-solve explanations, end-to-end:
+./run-pipeline.sh --mode themeless --tiers easy,medium,hard,expert --explain
 
-# 2. Write the other two tiers against the SAME library grid
-cd clue-writer
-npm run clue -- ../out/libraries/grid-library.json --grid 0 --day Medium \
-    --out ../out/puzzles/themeless-grid0.clued.medium.json
-npm run clue -- ../out/libraries/grid-library.json --grid 0 --day Hard \
-    --out ../out/puzzles/themeless-grid0.clued.hard.json
-
-# 3. Post-solve explanations (run once; the answers are the same across tiers)
-npm run explain -- ../out/puzzles/themeless-grid0.clued.json \
-    --out ../out/puzzles/themeless-grid0.explained.json
-
-# 4. Merge into one player puzzle
-cd ../../xword-player
-npm run import-puzzle -- \
-  --easy   ../xword-pipeline/out/puzzles/themeless-grid0.clued.json \
-  --medium ../xword-pipeline/out/puzzles/themeless-grid0.clued.medium.json \
-  --hard   ../xword-pipeline/out/puzzles/themeless-grid0.clued.hard.json \
-  --explanations ../xword-pipeline/out/puzzles/themeless-grid0.explained.json \
-  --id mini-5 --title "Mini 5×5"
+# Drop --tiers and use --day for legacy single-tier puzzles.
 ```
 
-Cost: ~3× the clue step + 1 explain step per puzzle on Opus 4.7. The player
-remains fully backward-compatible — puzzles imported the old single-tier way
-(positional `<clued.json>`) still work; only the new bundles carry the extra
-data that F4 (difficulty selector, graduated hints, post-solve explainers) will
-spend.
+The script prints a ready-to-paste `import-puzzle` command at the end. The
+player's `import-puzzle` derives the manifest `difficulty` label from the
+**tier ceiling** of the bundle (easy-only ⇒ "Easy", up through expert ⇒
+"Expert"), so the badge truthfully reflects the hardest content available.
+
+Cost: ~N× clue + N× QA + 1× explain per puzzle on Opus 4.7, where N is the
+number of tiers. Backward compatible — single-tier puzzles imported the old
+positional way (`<clued.json>`) still work.
 
 ## Running the tools individually
 
