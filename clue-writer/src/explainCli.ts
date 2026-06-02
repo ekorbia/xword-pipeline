@@ -2,37 +2,43 @@
 // puzzle. Output feeds the player via `import-puzzle --explanations`.
 //
 // Usage:
-//   npm run explain -- <clued.json> [--out explained.json] [--dry-run]
+//   npm run explain -- <clued.json> [--out explained.json] [--model <id>] [--dry-run]
+//
+// --model defaults to the explainer's own default (currently Haiku 4.5 — much
+// cheaper and faster than Opus, with explanation quality holding up well).
+// Pass `--model claude-opus-4-7` to restore the previous behavior.
 //
 // Requires ANTHROPIC_API_KEY (except with --dry-run).
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname } from "node:path";
 import type { CluedPuzzle } from "./types.js";
-import { buildExplainMessage, explainPuzzle } from "./explain.js";
+import { buildExplainMessage, DEFAULT_EXPLAIN_MODEL, explainPuzzle } from "./explain.js";
 import { dayLabel } from "./styleGuide.js";
 
 const PUZZLES_DIR = "../out/puzzles";
 
 function parseArgs(argv: string[]) {
-  const args = { input: "", out: "", dryRun: false };
+  const args = { input: "", out: "", dryRun: false, model: "" };
   const rest = argv.slice(2);
   for (let i = 0; i < rest.length; i++) {
     const a = rest[i]!;
     if (a === "--out") args.out = rest[++i]!;
     else if (a === "--dry-run") args.dryRun = true;
+    else if (a === "--model") args.model = rest[++i]!;
     else if (!args.input) args.input = a;
     else throw new Error(`unexpected argument: ${a}`);
   }
-  if (!args.input) throw new Error("usage: explain <clued.json> [--out explained.json] [--dry-run]");
+  if (!args.input) throw new Error("usage: explain <clued.json> [--out explained.json] [--model <id>] [--dry-run]");
   return args;
 }
 
 async function main() {
   const args = parseArgs(process.argv);
   const puzzle = JSON.parse(readFileSync(args.input, "utf8")) as CluedPuzzle;
+  const model = args.model || DEFAULT_EXPLAIN_MODEL;
   console.error(
-    `explaining: ${args.input} | ${puzzle.themed ? "themed" : "themeless"} ${dayLabel(puzzle.day)} | ${puzzle.across.length + puzzle.down.length} entries`,
+    `explaining: ${args.input} | ${puzzle.themed ? "themed" : "themeless"} ${dayLabel(puzzle.day)} | ${puzzle.across.length + puzzle.down.length} entries | model: ${model}`,
   );
 
   if (args.dryRun) {
@@ -46,7 +52,7 @@ async function main() {
   }
 
   const t0 = Date.now();
-  const { items, warnings, usage } = await explainPuzzle(puzzle);
+  const { items, warnings, usage } = await explainPuzzle(puzzle, { model });
   const secs = ((Date.now() - t0) / 1000).toFixed(1);
 
   console.error(`\nexplained ${items.length} entries in ${secs}s  (cache read ${usage.cacheRead} tok)`);

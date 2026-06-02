@@ -3,7 +3,23 @@ import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { z } from "zod";
 import type { CluedEntry, CluedPuzzle } from "./types.js";
 
-const MODEL = "claude-opus-4-7";
+/**
+ * Default model for the explain pass. Haiku 4.5 is the right default here:
+ * explanations are short, factual "why this answer fits the clue" lines, not
+ * wordplay — Haiku handles them well at ~1/5 the input cost and ~1/5 the output
+ * cost of Opus, and noticeably faster. Callers can override with the `model`
+ * option (e.g. `claude-opus-4-7` for higher-quality wit on tricky puzzles).
+ */
+export const DEFAULT_EXPLAIN_MODEL = "claude-haiku-4-5";
+
+/**
+ * Whether the given model supports `thinking: { type: "adaptive" }` AND the
+ * `output_config.effort` parameter. Both are gated to current Opus 4.6+/Sonnet
+ * 4.6 per Anthropic's models docs (verified 2026-06). Haiku 4.5 rejects both.
+ */
+function supportsAdaptiveReasoning(model: string): boolean {
+  return /^claude-opus-4-[6789]/.test(model) || /^claude-sonnet-4-6/.test(model);
+}
 
 /**
  * System prompt for the explainer pass. Explanations are shown AFTER the solver
@@ -62,14 +78,30 @@ export interface ExplainResult {
   usage: { input: number; output: number; cacheRead: number; cacheWrite: number };
 }
 
-export async function explainPuzzle(puzzle: CluedPuzzle, client = new Anthropic()): Promise<ExplainResult> {
+export interface ExplainOpts {
+  /** Anthropic client (defaults to a fresh `new Anthropic()`). */
+  client?: Anthropic;
+  /** Model to use (defaults to {@link DEFAULT_EXPLAIN_MODEL}). */
+  model?: string;
+}
+
+export async function explainPuzzle(
+  puzzle: CluedPuzzle,
+  opts: ExplainOpts = {},
+): Promise<ExplainResult> {
+  const client = opts.client ?? new Anthropic();
+  const model = opts.model ?? DEFAULT_EXPLAIN_MODEL;
+  const adaptiveOk = supportsAdaptiveReasoning(model);
+  // Haiku 4.5 rejects both `thinking` (adaptive) and `output_config.effort`;
+  // include them only on models that accept them. On Opus we drop effort to
+  // `medium` for this pass — explanations don't need full deliberation.
   const response = await client.messages.parse({
-    model: MODEL,
+    model,
     max_tokens: 16000,
-    thinking: { type: "adaptive" },
+    ...(adaptiveOk ? { thinking: { type: "adaptive" as const } } : {}),
     system: [{ type: "text", text: EXPLAIN_GUIDE, cache_control: { type: "ephemeral", ttl: "1h" } }],
     output_config: {
-      effort: "high",
+      ...(adaptiveOk ? { effort: "medium" as const } : {}),
       format: zodOutputFormat(ExplainResponse),
     },
     messages: [{ role: "user", content: buildExplainMessage(puzzle) }],

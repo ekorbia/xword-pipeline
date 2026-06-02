@@ -34,6 +34,7 @@ DAY=""             # empty → clue writer picks (Saturday themeless / Wednesday
 THEMES=""          # comma-separated, required for --mode themed
 TIERS=""           # comma-separated subset of {easy,medium,hard}; empty = single-tier (today)
 EXPLAIN=0          # 1 → also run the post-solve explainer
+EXPLAIN_MODEL=""   # override model for the explain pass (default: explainer's own default — Haiku 4.5)
 NO_QA=0            # 1 → skip the editorial QA step
 SEED=1             # RNG seed for grid generation (bump to get a different library)
 
@@ -59,6 +60,8 @@ Usage: run-pipeline.sh [options]
                             independently. --explain still runs once against the medium
                             (or first listed) tier — explanations are tier-agnostic.
   --explain                 Also run the post-solve explainer (feeds the player as --explanations).
+  --explain-model <id>      Override the explainer's model (default: claude-haiku-4-5).
+                            Pass claude-opus-4-7 to restore the prior, higher-cost behavior.
   --no-qa                   Skip the editorial QA step (saves a Claude call).
   -h, --help                Show this help
 
@@ -82,6 +85,7 @@ while [[ $# -gt 0 ]]; do
     --day) DAY="$2"; shift 2 ;;
     --tiers) TIERS="$2"; shift 2 ;;
     --explain) EXPLAIN=1; shift ;;
+    --explain-model) EXPLAIN_MODEL="$2"; shift 2 ;;
     --no-qa) NO_QA=1; shift ;;
     --seed) SEED="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
@@ -242,8 +246,10 @@ if [[ "$NO_QA" -eq 0 ]]; then
   fi
 fi
 if [[ "$EXPLAIN" -eq 1 ]]; then
+  EXPLAIN_MODEL_ARGS=()
+  [[ -n "$EXPLAIN_MODEL" ]] && EXPLAIN_MODEL_ARGS=(--model "$EXPLAIN_MODEL")
   echo "==> post-solve explanations (Claude) on $(basename "$PRIMARY_CLUED") [parallel]"
-  ( cd "$CLUE" && npx --yes tsx src/explainCli.ts "$PRIMARY_CLUED" --out "$EXPLAINED" ) &
+  ( cd "$CLUE" && npx --yes tsx src/explainCli.ts "$PRIMARY_CLUED" "${EXPLAIN_MODEL_ARGS[@]}" --out "$EXPLAINED" ) &
   _POST_PIDS+=("$!"); _POST_LABELS+=("explain")
 fi
 POST_FAIL=0

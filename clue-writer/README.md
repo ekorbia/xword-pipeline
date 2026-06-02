@@ -107,6 +107,7 @@ npm run explain -- examples/sample-clued.json --dry-run
 |------|---------|-------------|
 | `<clued.json>` | (required) | A clued-puzzle JSON (output of `clue`) |
 | `--out PATH` | `../out/puzzles/<input>.explained.json` | Output explanations file |
+| `--model <id>` | `claude-haiku-4-5` | Model to use. Default is Haiku 4.5 — short factual recaps don't need Opus. Pass `claude-opus-4-7` to restore the prior behavior |
 | `--dry-run` | off | Print the explain prompt and exit |
 
 Output shape: `{ source, items: [{ num, dir, answer, explanation }, ...] }`.

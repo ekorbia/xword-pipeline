@@ -98,6 +98,7 @@ prints the three artifact paths and the verdict.
 | `--candidates N` | `200` | How many random grids to generate & screen |
 | `--time SECS` | `2` | Per-grid fill budget |
 | `--top N` | `20` | How many of the best grids to keep in the library |
+| `--explain-model <id>` | `claude-haiku-4-5` | Model for the post-solve explainer (used only with `--explain`). Pass `claude-opus-4-7` to restore the previous, higher-cost behavior |
 
 ### The quality levers (`--max-iffy`, `--keep-mean`)
 
@@ -261,6 +262,7 @@ can be run directly:
 |---|---|---|
 | `fill-engine` (grid generation) | No | free, seconds |
 | `theme-idea` / `clue` / `qa` / `revise` | Yes | a few cents each (Opus 4.7) |
+| `explain` | Yes | ~1/5 of the above (Haiku 4.5 by default; override with `--explain-model`) |
 
 - **Themeless fills cleaner than themed.** Themed grids carry the theme answers
   plus equal-length mirror slots, so they're harder to fill — expect to relax
