@@ -20,6 +20,12 @@ ENGINE="$ROOT/fill-engine"
 CLUE="$ROOT/clue-writer"
 OUT="$ROOT/out"
 
+# Per-task timings (each background subshell writes its elapsed seconds here on
+# EXIT; the orchestrator reads them at the end to render the timing summary).
+# Cleaned up unconditionally on script exit.
+TIMING_DIR=$(mktemp -d)
+trap 'rm -rf "$TIMING_DIR"' EXIT
+
 # ---- defaults ----
 MODE="themeless"
 SIZE=15            # grid dimension (themeless only; themed is 15-only for now)
@@ -116,6 +122,7 @@ WORDLIST="$ENGINE/data/xwordlist.dict"
 LIB=""
 NAME=""
 
+T_FILL_START=$SECONDS
 echo "==> generating grid library (mode: $MODE)…"
 if [[ "$MODE" == "themeless" ]]; then
   : "${BLOCKS:=$(( SIZE * SIZE * 16 / 100 ))}"
@@ -144,6 +151,7 @@ elif [[ "$MODE" == "themed" ]]; then
 else
   echo "error: --mode must be 'themeless' or 'themed'" >&2; exit 2
 fi
+T_FILL=$((SECONDS - T_FILL_START))
 
 # ---- abort early if no grid filled cleanly ----
 COUNT=$(grep -o '"count": *[0-9]*' "$LIB" | head -1 | grep -o '[0-9]*' || echo 0)
@@ -171,6 +179,7 @@ QA_TARGETS=()                    # (label, clued, qaOut) triples flattened: 3 en
 QA_FILE_PRIMARY="$OUT/puzzles/${NAME}.qa.json"   # single-tier path (kept for compat)
 
 # ---- clue writing: single-tier (default) or multi-tier (--tiers, parallel) ----
+T_CLUE_START=$SECONDS
 if [[ -n "$TIERS" ]]; then
   if [[ -n "$DAY" ]]; then
     echo "warning: --day is ignored when --tiers is set (per-tier day words derived: Easy/Medium/Hard)" >&2
@@ -186,7 +195,11 @@ if [[ -n "$TIERS" ]]; then
     word="$(tr '[:lower:]' '[:upper:]' <<< "${tier:0:1}")${tier:1}"   # Easy / Medium / Hard
     tier_clued="$OUT/puzzles/${NAME}.clued.${tier}.json"
     echo "==> clueing tier: $word → $(basename "$tier_clued") [parallel]"
-    ( cd "$CLUE" && npx --yes tsx src/cli.ts "$LIB" --grid "$GRID" --day "$word" --out "$tier_clued" ) &
+    (
+      T0=$SECONDS
+      trap 'echo $((SECONDS - T0)) > "$TIMING_DIR/clue-'"$tier"'.t"' EXIT
+      cd "$CLUE" && npx --yes tsx src/cli.ts "$LIB" --grid "$GRID" --day "$word" --out "$tier_clued"
+    ) &
     _TIER_PIDS+=("$!")
     _TIER_FILES+=("$tier_clued")
     _TIER_NAMES+=("$tier")
@@ -216,6 +229,7 @@ else
   (cd "$CLUE" && npx --yes tsx src/cli.ts "$LIB" --grid "$GRID" "${DAY_ARG[@]}" --out "$PRIMARY_CLUED")
   CLUED_LINES+=("  puzzle  : $PRIMARY_CLUED")
 fi
+T_CLUE=$((SECONDS - T_CLUE_START))
 
 # ---- QA + explain (run in parallel) ----
 # QA: in multi-tier mode, review EVERY tier file (each carries its own day
@@ -223,6 +237,7 @@ fi
 # only clued file.
 # Explain: always runs once against PRIMARY_CLUED — explanations are
 # tier-agnostic (they explain why the answer fits, not why the clue is hard).
+T_POST_START=$SECONDS
 declare -a _POST_PIDS=()
 declare -a _POST_LABELS=()
 declare -a _QA_OUTPUTS=()        # parallel arrays for per-tier verdict summary
@@ -234,13 +249,21 @@ if [[ "$NO_QA" -eq 0 ]]; then
       tier_clued="${_TIER_FILES[$i]}"
       tier_qa="$OUT/puzzles/${NAME}.qa.${tier}.json"
       echo "==> editorial QA (Claude) [${tier}] on $(basename "$tier_clued") [parallel]"
-      ( cd "$CLUE" && npx --yes tsx src/qaCli.ts "$tier_clued" --out "$tier_qa" ) &
+      (
+        T0=$SECONDS
+        trap 'echo $((SECONDS - T0)) > "$TIMING_DIR/qa-'"$tier"'.t"' EXIT
+        cd "$CLUE" && npx --yes tsx src/qaCli.ts "$tier_clued" --out "$tier_qa"
+      ) &
       _POST_PIDS+=("$!"); _POST_LABELS+=("QA[${tier}]")
       _QA_OUTPUTS+=("$tier_qa"); _QA_LABELS+=("$tier")
     done
   else
     echo "==> editorial QA (Claude) on $(basename "$PRIMARY_CLUED") [parallel]"
-    ( cd "$CLUE" && npx --yes tsx src/qaCli.ts "$PRIMARY_CLUED" --out "$QA_FILE_PRIMARY" ) &
+    (
+      T0=$SECONDS
+      trap 'echo $((SECONDS - T0)) > "$TIMING_DIR/qa-primary.t"' EXIT
+      cd "$CLUE" && npx --yes tsx src/qaCli.ts "$PRIMARY_CLUED" --out "$QA_FILE_PRIMARY"
+    ) &
     _POST_PIDS+=("$!"); _POST_LABELS+=("QA")
     _QA_OUTPUTS+=("$QA_FILE_PRIMARY"); _QA_LABELS+=("primary")
   fi
@@ -249,7 +272,11 @@ if [[ "$EXPLAIN" -eq 1 ]]; then
   EXPLAIN_MODEL_ARGS=()
   [[ -n "$EXPLAIN_MODEL" ]] && EXPLAIN_MODEL_ARGS=(--model "$EXPLAIN_MODEL")
   echo "==> post-solve explanations (Claude) on $(basename "$PRIMARY_CLUED") [parallel]"
-  ( cd "$CLUE" && npx --yes tsx src/explainCli.ts "$PRIMARY_CLUED" "${EXPLAIN_MODEL_ARGS[@]}" --out "$EXPLAINED" ) &
+  (
+    T0=$SECONDS
+    trap 'echo $((SECONDS - T0)) > "$TIMING_DIR/explain.t"' EXIT
+    cd "$CLUE" && npx --yes tsx src/explainCli.ts "$PRIMARY_CLUED" "${EXPLAIN_MODEL_ARGS[@]}" --out "$EXPLAINED"
+  ) &
   _POST_PIDS+=("$!"); _POST_LABELS+=("explain")
 fi
 POST_FAIL=0
@@ -258,6 +285,7 @@ for i in "${!_POST_PIDS[@]}"; do
   label="${_POST_LABELS[$i]}"
   if ! wait "$pid"; then echo "warning: $label step failed" >&2; POST_FAIL=1; fi
 done
+T_POST=$((SECONDS - T_POST_START))
 
 # Read every QA verdict (if QA ran). Track "worst" — any non-ready verdict
 # is surfaced in the summary as a hint to revise.
@@ -318,6 +346,53 @@ if [[ "$NO_QA" -eq 0 && "$WORST_VERDICT" != "ready" ]]; then
   fi
   echo "  Grid-level:  re-run with --grid $((GRID+1)), or stricter --keep-mean / --max-iffy 0."
 fi
+
+# ---- timing summary ----
+# Stage lines show each stage's own wall-clock. When QA and Explain both ran,
+# the synthetic "QA ‖ Explain" line shows the wall-clock cost they actually
+# added to the total (= max of the two), so the reader can verify
+# Fill + Clue + (QA‖Explain) ≈ Total. Per-tier sub-detail comes from each
+# background subshell's EXIT trap writing its elapsed seconds to TIMING_DIR.
+_read_time() { local f="$TIMING_DIR/$1.t"; [[ -f "$f" ]] && cat "$f" || echo "0"; }
+echo ""
+echo "================= timing summary ================="
+printf "  Fill          : %3ds\n" "${T_FILL:-0}"
+if [[ -n "$TIERS" ]]; then
+  _BD=""
+  for tier in "${_TIER_NAMES[@]}"; do
+    _t=$(_read_time "clue-$tier")
+    _BD+="${_BD:+ · }${tier} ${_t}s"
+  done
+  printf "  Clue          : %3ds  (%d tiers, parallel)\n" "${T_CLUE:-0}" "${#_TIER_NAMES[@]}"
+  echo  "                  └ ${_BD}"
+else
+  printf "  Clue          : %3ds\n" "${T_CLUE:-0}"
+fi
+if [[ "$NO_QA" -eq 0 ]]; then
+  _QA_MAX=0; _BD=""
+  for label in "${_QA_LABELS[@]}"; do
+    _t=$(_read_time "qa-$label")
+    [[ "$_t" =~ ^[0-9]+$ ]] && (( _t > _QA_MAX )) && _QA_MAX=$_t
+    _BD+="${_BD:+ · }${label} ${_t}s"
+  done
+  if [[ -n "$TIERS" ]]; then
+    printf "  QA            : %3ds  (%d tiers, parallel)\n" "$_QA_MAX" "${#_QA_LABELS[@]}"
+    echo  "                  └ ${_BD}"
+  else
+    printf "  QA            : %3ds\n" "$_QA_MAX"
+  fi
+fi
+if [[ "$EXPLAIN" -eq 1 ]]; then
+  _T_EXP=$(_read_time "explain")
+  printf "  Explain       : %3ds  (%s)\n" "$_T_EXP" "${EXPLAIN_MODEL:-claude-haiku-4-5}"
+fi
+if [[ "$NO_QA" -eq 0 && "$EXPLAIN" -eq 1 ]]; then
+  printf "  QA ‖ Explain  : %3ds  (these two ran in parallel; max governs)\n" "${T_POST:-0}"
+fi
+echo "  ──────────"
+printf "  Total         : %3ds  (wall-clock)\n" "$SECONDS"
+echo "==================================================="
+
 # Propagate any parallel-step failure as the script's exit code.
 [[ "${POST_FAIL:-0}" -ne 0 ]] && exit 1
 exit 0
