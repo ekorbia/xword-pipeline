@@ -63,8 +63,11 @@ export ANTHROPIC_API_KEY=sk-ant-...
 ## Quick start — the whole pipeline in one command
 
 `run-pipeline.sh` runs **generate → clue → qa** and prints the QA verdict. All
-output lands in `out/`. (Fixing the findings it reports is a separate manual
-step — see [Fixing QA findings](#fixing-qa-findings).)
+output lands in `out/`. Run with **no arguments** (`./run-pipeline.sh`) to
+enter an interactive wizard that walks you through size, tier mode, explainer,
+and the quality levers — themeless puzzles only; themed runs use the flags
+directly. (Fixing the findings QA reports is a separate manual step — see
+[Fixing QA findings](#fixing-qa-findings).)
 
 ```bash
 # Themeless (Fri/Sat-style) puzzle

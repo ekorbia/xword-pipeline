@@ -13,7 +13,14 @@
 # All generated JSON lands under out/{libraries,puzzles}. Requires
 # ANTHROPIC_API_KEY for the clue + qa steps (the grid step is free/offline).
 
-set -euo pipefail
+# NB: deliberately NOT using `-u` (nounset). On macOS bash 3.2, expanding an
+# empty array under `set -u` (e.g. `"${EXPLAIN_MODEL_ARGS[@]}"` when no
+# --explain-model was given) throws "unbound variable" and silently aborts
+# the calling subshell — bypassing our `wait`-failure detection. The script
+# has several legitimate optional-flag arrays; dropping -u is simpler and
+# safer than guarding every site with `${arr[@]+...}` (which is bash-3.2
+# brittle anyway). We still get the safety of -e and pipefail.
+set -eo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 ENGINE="$ROOT/fill-engine"
@@ -48,6 +55,9 @@ usage() {
   cat <<'EOF'
 Usage: run-pipeline.sh [options]
 
+  Run with NO arguments to enter an interactive wizard (themeless only).
+  For themed puzzles, use the flags directly.
+
   --mode themeless|themed   Pipeline mode (default: themeless)
   --size N                  Grid dimension, themeless only (default: 15; e.g. 5 or 10 for minis)
   --themes A,B,C            Theme answers (required for --mode themed; A-Z, no spaces)
@@ -75,6 +85,198 @@ Output: out/libraries/<grid|theme>-library.json, out/puzzles/<name>.clued[.<tier
         out/puzzles/<name>.qa.json, out/puzzles/<name>.explained.json
 EOF
 }
+
+# Interactive wizard. Fires when the script is invoked with no args (themeless
+# only — themed users use the flag CLI). Populates the same variables the
+# flag-parsing loop sets, so the rest of the pipeline is unchanged.
+interactive_prompt() {
+  if [[ ! -t 0 ]]; then
+    echo "error: interactive mode requires a terminal; pass --help to see flags" >&2
+    exit 2
+  fi
+
+  local _ans _tier_mode _advanced=0 _l _ok _t _blocks_default _blocks_show _explain_show _cli
+
+  echo ""
+  echo "  ─────────────────────────────────────────"
+  echo "  WordFuzz pipeline — interactive setup"
+  echo "  ─────────────────────────────────────────"
+  echo "  Builds a themeless puzzle. For themed puzzles, use the flag CLI:"
+  echo "    ./run-pipeline.sh --mode themed --themes A,B,C ..."
+  echo "  (Ctrl-C to abort; defaults shown in [brackets])"
+  echo ""
+
+  MODE="themeless"
+
+  # Q1: grid size
+  while true; do
+    echo "  Grid size?"
+    echo "    1) 5×5   mini"
+    echo "    2) 10×10 midi"
+    echo "    3) 15×15 standard"
+    read -rp "  Choice [3]: " _ans
+    _ans="${_ans:-3}"
+    case "$_ans" in
+      1) SIZE=5;  break ;;
+      2) SIZE=10; break ;;
+      3) SIZE=15; break ;;
+      *) echo "  must be 1, 2, or 3" ;;
+    esac
+  done
+  echo ""
+
+  # Q2: single vs multi-tier
+  while true; do
+    echo "  Tier mode?"
+    echo "    1) single tier  — one clue set, one day"
+    echo "    2) multi-tier   — 2-4 day calibrations, runs in parallel"
+    read -rp "  Choice [2]: " _ans
+    _ans="${_ans:-2}"
+    case "$_ans" in
+      1) _tier_mode="single"; break ;;
+      2) _tier_mode="multi";  break ;;
+      *) echo "  must be 1 or 2" ;;
+    esac
+  done
+  echo ""
+
+  if [[ "$_tier_mode" == "single" ]]; then
+    # Q3a: single-tier day
+    while true; do
+      echo "  Day / difficulty?"
+      echo "    Monday=Easy, Tuesday=Easy, Wednesday=Medium, Thursday=Tricky,"
+      echo "    Friday=Hard, Saturday=Expert"
+      read -rp "  Day or word [Saturday]: " _ans
+      _ans="${_ans:-Saturday}"
+      _l="$(echo "$_ans" | tr '[:upper:]' '[:lower:]')"
+      case "$_l" in
+        monday|tuesday|wednesday|thursday|friday|saturday|easy|medium|tricky|hard|expert)
+          DAY="$_ans"; break ;;
+        *) echo "  must be Monday..Saturday or Easy/Medium/Tricky/Hard/Expert" ;;
+      esac
+    done
+    TIERS=""
+  else
+    # Q3b: multi-tier set (default: easy,medium,hard per user pref)
+    while true; do
+      echo "  Tier set?"
+      echo "    1) easy + medium                  (Mon + Wed)"
+      echo "    2) easy + medium + hard           (Mon + Wed + Fri)  ← recommended"
+      echo "    3) easy + medium + hard + expert  (Mon + Wed + Fri + Sat)"
+      echo "    4) custom"
+      read -rp "  Choice [2]: " _ans
+      _ans="${_ans:-2}"
+      case "$_ans" in
+        1) TIERS="easy,medium";              break ;;
+        2) TIERS="easy,medium,hard";         break ;;
+        3) TIERS="easy,medium,hard,expert";  break ;;
+        4)
+          while true; do
+            read -rp "  Custom tiers (comma-separated; e.g. easy,medium,hard): " TIERS
+            TIERS="$(echo "$TIERS" | tr -d ' ' | tr '[:upper:]' '[:lower:]')"
+            _ok=1
+            IFS=',' read -ra _T_PRECHECK <<< "$TIERS"
+            for _t in "${_T_PRECHECK[@]}"; do
+              case "$_t" in easy|medium|hard|expert) ;; *) _ok=0; echo "  bad tier value: '$_t'"; break ;; esac
+            done
+            [[ "$_ok" -eq 1 && -n "$TIERS" ]] && break
+          done
+          break ;;
+        *) echo "  must be 1, 2, 3, or 4" ;;
+      esac
+    done
+    DAY=""
+  fi
+  echo ""
+
+  # Q4: explain?
+  read -rp "  Run post-solve explainer (adds ~6s + ~\$0.01)? [Y/n]: " _ans
+  _ans="${_ans:-y}"
+  case "$_ans" in [yY]*) EXPLAIN=1 ;; *) EXPLAIN=0 ;; esac
+  echo ""
+
+  # Q5: advanced options gate
+  read -rp "  Show advanced options (candidates, max-iffy, keep-mean, blocks, time)? [y/N]: " _ans
+  _ans="${_ans:-n}"
+  case "$_ans" in [yY]*) _advanced=1 ;; esac
+  echo ""
+
+  if [[ "$_advanced" -eq 1 ]]; then
+    read -rp "  Candidates (random grids to screen) [200]: " _ans
+    CANDIDATES="${_ans:-200}"
+
+    read -rp "  Max-iffy (max entries scoring <50; 0=strictest) [0]: " _ans
+    MAX_IFFY="${_ans:-0}"
+
+    read -rp "  Keep-mean (mean answer-score floor; 78=polished) [78]: " _ans
+    KEEP_MEAN="${_ans:-78}"
+
+    _blocks_default=$((SIZE * SIZE * 16 / 100))
+    read -rp "  Blocks (black squares; ~16% of area = $_blocks_default) [$_blocks_default]: " _ans
+    BLOCKS="${_ans:-$_blocks_default}"
+
+    read -rp "  Per-grid fill budget seconds [2]: " _ans
+    TIME="${_ans:-2}"
+
+    if [[ "$EXPLAIN" -eq 1 ]]; then
+      read -rp "  Explainer model [claude-haiku-4-5]: " _ans
+      EXPLAIN_MODEL="${_ans:-}"
+    fi
+    echo ""
+  fi
+
+  # Confirmation summary + equivalent CLI
+  _blocks_show="$BLOCKS"
+  [[ -z "$BLOCKS" ]] && _blocks_show="$((SIZE * SIZE * 16 / 100)) (auto, ≈16% of ${SIZE}×${SIZE})"
+  _explain_show="no"
+  [[ "$EXPLAIN" -eq 1 ]] && _explain_show="yes  (${EXPLAIN_MODEL:-claude-haiku-4-5})"
+
+  echo "  ─────────────────────────────────────────"
+  echo "  Confirm"
+  echo "  ─────────────────────────────────────────"
+  printf "    Mode       : themeless\n"
+  printf "    Size       : %d×%d\n" "$SIZE" "$SIZE"
+  if [[ -n "$TIERS" ]]; then
+    printf "    Tiers      : %s\n" "$TIERS"
+  else
+    printf "    Day        : %s\n" "$DAY"
+  fi
+  printf "    Explain    : %s\n" "$_explain_show"
+  printf "    Candidates : %s\n" "$CANDIDATES"
+  printf "    Max-iffy   : %s\n" "$MAX_IFFY"
+  printf "    Keep-mean  : %s\n" "$KEEP_MEAN"
+  printf "    Blocks     : %s\n" "$_blocks_show"
+  printf "    Time/grid  : %ss\n" "$TIME"
+  echo ""
+
+  _cli="./run-pipeline.sh --mode themeless"
+  [[ "$SIZE" != "15" ]] && _cli+=" --size $SIZE"
+  if [[ -n "$TIERS" ]]; then
+    _cli+=" --tiers $TIERS"
+  else
+    _cli+=" --day $DAY"
+  fi
+  [[ "$EXPLAIN" -eq 1 ]] && _cli+=" --explain"
+  [[ -n "$EXPLAIN_MODEL" ]] && _cli+=" --explain-model $EXPLAIN_MODEL"
+  if [[ "$_advanced" -eq 1 ]]; then
+    [[ "$CANDIDATES" != "200" ]] && _cli+=" --candidates $CANDIDATES"
+    [[ "$MAX_IFFY" != "0" ]] && _cli+=" --max-iffy $MAX_IFFY"
+    [[ "$KEEP_MEAN" != "78" ]] && _cli+=" --keep-mean $KEEP_MEAN"
+    [[ -n "$BLOCKS" ]] && _cli+=" --blocks $BLOCKS"
+    [[ "$TIME" != "2" ]] && _cli+=" --time $TIME"
+  fi
+  echo "  Equivalent CLI for next time:"
+  echo "    $_cli"
+  echo ""
+
+  read -rp "  Proceed? [Y/n]: " _ans
+  _ans="${_ans:-y}"
+  case "$_ans" in [yY]*) ;; *) echo "  aborted."; exit 0 ;; esac
+  echo ""
+}
+
+# No args → interactive wizard. Otherwise existing flag-parsing flow.
+[[ $# -eq 0 ]] && interactive_prompt
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
