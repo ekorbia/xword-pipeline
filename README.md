@@ -93,7 +93,7 @@ prints the three artifact paths and the verdict.
 | `--mode themeless\|themed` | `themeless` | Themed requires `--themes` |
 | `--size N` | `15` | **Themeless only.** Grid dimension — e.g. `5` or `10` for minis. Themed grids are 15×15 for now |
 | `--themes A,B,C` | — | Theme answers (A–Z, no spaces). 1–4 answers; each 3–15 letters but **never exactly 12** (a 12-letter answer can't be placed as a single across in a 15-wide grid) |
-| `--blocks N` | ~16% of area / 44 | Black squares. Defaults to ~16% of the grid area (15→36, 10→16, 5→4); themed grids want **more** (42–44) to ease the fill |
+| `--blocks N` | ~16% of area ± ~10% / 44 ± ~10% | Black squares. Default is ~16% of the grid area with a seeded ±10% jitter (15→32-40, 10→14-18, 5→3-5); themed grids default to 44 with the same jitter shape and a 42-block floor. Pass an explicit N to disable jitter. Reproducible via `--seed` |
 | `--day DAY` | Saturday / Wednesday | Clue difficulty. Accepts a day (Monday…Saturday) **or** a friendly word: `Easy`=Mon, `Medium`=Wed, `Tricky`=Thu, `Hard`=Fri, `Expert`=Sat |
 | `--grid N` | `0` | Which library grid to clue (`0` = highest quality) |
 | `--keep-mean F` | `78` | **Quality floor.** Keep only grids whose mean answer-score ≥ F |
@@ -102,6 +102,8 @@ prints the three artifact paths and the verdict.
 | `--time SECS` | `2` | Per-grid fill budget |
 | `--top N` | `20` | How many of the best grids to keep in the library |
 | `--explain-model <id>` | `claude-haiku-4-5` | Model for the post-solve explainer (used only with `--explain`). Pass `claude-opus-4-7` to restore the previous, higher-cost behavior |
+| `--name ID` | `<mode>-grid<GRID>` | Output-file prefix override. Use unique names across runs to prevent file collisions (the batch orchestrator does this automatically; specify manually only for ad-hoc multi-puzzle runs) |
+| `--date YYYY-MM-DD` | — | If `--name` is not given, auto-derives `--name puzzle-<DATE>`. Also appended to the suggested `import-puzzle` command so the player slots the puzzle into the right manifest date |
 
 ### The quality levers (`--max-iffy`, `--keep-mean`)
 
@@ -244,6 +246,69 @@ player's `import-puzzle` derives the manifest `difficulty` label from the
 Cost: ~N× clue + N× QA + 1× explain per puzzle on Opus 4.7, where N is the
 number of tiers. Backward compatible — single-tier puzzles imported the old
 positional way (`<clued.json>`) still work.
+
+## Generating a batch of puzzles in one command
+
+`generate-batch.sh` wraps `run-pipeline.sh` to produce N dated puzzles in
+one orchestrated run, with unique filenames per date. Common use is a week
+of daily content (hence the example below), but the pattern length is
+arbitrary — anywhere from one puzzle to dozens.
+
+```bash
+# 7 puzzles: three 10×10 (Mon-Wed), four 15×15 (Thu-Sun).
+./generate-batch.sh \
+  --start 2026-06-09 \
+  --pattern 10,10,10,15,15,15,15 \
+  --tiers easy,medium,hard
+```
+
+Each puzzle gets `--name puzzle-<DATE>` and `--date <DATE>` automatically, so
+the output files are unique and downstream import knows which manifest day to
+write. Number of puzzles is implicit from `--pattern`'s length.
+
+**Defaults differ from `run-pipeline.sh`** for batch-friendly behavior:
+
+| Flag | Batch default | Single-puzzle default | Why |
+|------|---------------|------------------------|------|
+| QA | **off** (`--qa` to enable) | on (`--no-qa` to skip) | Fill engine already guarantees solvability; QA findings aren't acted on in batch anyway |
+| Explain | **on** (`--no-explain` to skip) | off (`--explain` to enable) | Per-puzzle explanations are typically wanted for daily content |
+| Failure | continue (`--abort-on-fail` to bail) | exit on first failure | One bad puzzle shouldn't kill the rest of the batch |
+| Candidates | **300** (`--candidates N` to override) | 200 | Slightly deeper per-puzzle library (more clean grids kept). Local CPU cost only; no API impact. Adds ~10-15 min to a week-sized batch. |
+
+All other quality levers (`--max-iffy`, `--keep-mean`, `--candidates`,
+`--explain-model`) pass through to each per-puzzle invocation uniformly.
+
+The fill-engine seed defaults to current epoch (`$(date +%s)`) — each
+`generate-batch.sh` invocation produces a different set of puzzles.
+Each puzzle within the batch uses `BASE_SEED + index` for a distinct seed
+even when generation finishes quickly. To reproduce a specific batch, pass
+`--seed N` matching the `Base seed` value printed in the run's summary
+block. The same default applies to `run-pipeline.sh` directly — each
+invocation varies; pass `--seed N` to fix it.
+
+At the end you get a status table plus an executable import script:
+
+```
+================= batch complete =================
+  ✓  2026-06-09 (10x10)   ok
+  ✓  2026-06-10 (10x10)   ok
+  ✓  2026-06-11 (10x10)   ok
+  ✓  2026-06-12 (15x15)   ok
+  ✗  2026-06-13 (15x15)   FAILED (fail:rc=1)
+  ✓  2026-06-14 (15x15)   ok
+  ✓  2026-06-15 (15x15)   ok
+
+  Successful : 6/7
+  Wall-clock : 14m 32s
+=================================================
+
+  Or import all in one shot:
+    bash <repo>/out/imports-2026-06-09.sh
+```
+
+The generated `out/imports-<start>.sh` runs `npm run import-puzzle` for
+each successful puzzle in sequence, with dates and tier flags pre-filled.
+Failed puzzles are skipped in the import block.
 
 ## Running the tools individually
 

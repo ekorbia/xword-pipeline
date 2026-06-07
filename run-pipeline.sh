@@ -49,7 +49,9 @@ TIERS=""           # comma-separated subset of {easy,medium,hard}; empty = singl
 EXPLAIN=0          # 1 → also run the post-solve explainer
 EXPLAIN_MODEL=""   # override model for the explain pass (default: explainer's own default — Haiku 4.5)
 NO_QA=0            # 1 → skip the editorial QA step
-SEED=1             # RNG seed for grid generation (bump to get a different library)
+SEED=$(date +%s)   # RNG seed for grid generation. Defaults to current epoch (each invocation produces a distinct library). Pass --seed N to reproduce a prior run deterministically.
+NAME=""            # output-file prefix override (default: <mode>-grid<GRID>; e.g. puzzle-2026-06-09 in batch use)
+DATE=""            # YYYY-MM-DD; auto-derives NAME=puzzle-<DATE> if NAME unset, and is appended to the import-puzzle hint
 
 usage() {
   cat <<'EOF'
@@ -79,6 +81,11 @@ Usage: run-pipeline.sh [options]
   --explain-model <id>      Override the explainer's model (default: claude-haiku-4-5).
                             Pass claude-opus-4-7 to restore the prior, higher-cost behavior.
   --no-qa                   Skip the editorial QA step (saves a Claude call).
+  --name ID                 Output-file prefix (default: <mode>-grid<GRID>; e.g. "puzzle-2026-06-09"
+                            for batch use — prevents file collisions across pipeline runs).
+  --date YYYY-MM-DD         Auto-derives --name puzzle-<DATE> if --name unset; appended to
+                            the suggested import-puzzle command so the player slots the
+                            puzzle into the right manifest date.
   -h, --help                Show this help
 
 Output: out/libraries/<grid|theme>-library.json, out/puzzles/<name>.clued[.<tier>].json,
@@ -296,10 +303,20 @@ while [[ $# -gt 0 ]]; do
     --explain-model) EXPLAIN_MODEL="$2"; shift 2 ;;
     --no-qa) NO_QA=1; shift ;;
     --seed) SEED="$2"; shift 2 ;;
+    --name) NAME="$2"; shift 2 ;;
+    --date) DATE="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown option: $1" >&2; usage; exit 2 ;;
   esac
 done
+
+# ---- validate --date format, auto-derive NAME from --date if NAME unset ----
+if [[ -n "$DATE" ]]; then
+  if [[ ! "$DATE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+    echo "error: --date must be YYYY-MM-DD (got '$DATE')" >&2; exit 2
+  fi
+  [[ -z "$NAME" ]] && NAME="puzzle-$DATE"
+fi
 
 # ---- validate --tiers values up front (fail before any expensive step) ----
 if [[ -n "$TIERS" ]]; then
@@ -322,19 +339,40 @@ fi
 
 WORDLIST="$ENGINE/data/xwordlist.dict"
 LIB=""
-NAME=""
+# NB: do NOT reset NAME here. NAME is initialized at the top, may have been
+# set by --name, and may have been auto-derived from --date. The fill-stage
+# branch uses `${NAME:-<default>}` to fall back only if it's still empty.
 
 T_FILL_START=$SECONDS
 echo "==> generating grid library (mode: $MODE)…"
 if [[ "$MODE" == "themeless" ]]; then
-  : "${BLOCKS:=$(( SIZE * SIZE * 16 / 100 ))}"
+  # Seeded ±10% jitter around the 16%-of-area default, so each puzzle has a
+  # subtly different black-square density (matches NYT-style variation across
+  # days). Skipped entirely if --blocks was passed explicitly. Floor at 3
+  # protects 5×5 minis from going so open they fill weirdly.
+  if [[ -z "$BLOCKS" ]]; then
+    _base=$(( SIZE * SIZE * 16 / 100 ))
+    _range=$(( _base / 10 + 1 ))
+    _jitter=$(( SEED % (2 * _range + 1) - _range ))
+    BLOCKS=$(( _base + _jitter ))
+    [[ "$BLOCKS" -lt 3 ]] && BLOCKS=3
+  fi
   LIB="$OUT/libraries/grid-library.json"
-  NAME="themeless-grid${GRID}"
+  NAME="${NAME:-themeless-grid${GRID}}"
   "$ENGINE/target/release/library" \
     --wordlist "$WORDLIST" --size "$SIZE" --blocks "$BLOCKS" --candidates "$CANDIDATES" --time "$TIME" \
     --keep-mean "$KEEP_MEAN" --max-iffy "$MAX_IFFY" --top "$TOP" --seed "$SEED" --out "$LIB"
 elif [[ "$MODE" == "themed" ]]; then
-  : "${BLOCKS:=44}"
+  # Themed default is 44 (denser than themeless to ease fill with locked theme
+  # entries). Same ±10% jitter shape, but floored at 42 — fewer blocks than
+  # that and the engine struggles to fill themed grids cleanly.
+  if [[ -z "$BLOCKS" ]]; then
+    _base=44
+    _range=$(( _base / 10 + 1 ))
+    _jitter=$(( SEED % (2 * _range + 1) - _range ))
+    BLOCKS=$(( _base + _jitter ))
+    [[ "$BLOCKS" -lt 42 ]] && BLOCKS=42
+  fi
   if [[ -z "$THEMES" ]]; then
     echo "error: --mode themed requires --themes A,B,C" >&2; exit 2
   fi
@@ -343,7 +381,7 @@ elif [[ "$MODE" == "themed" ]]; then
     exit 2
   fi
   LIB="$OUT/libraries/theme-library.json"
-  NAME="themed-grid${GRID}"
+  NAME="${NAME:-themed-grid${GRID}}"
   THEME_FLAGS=()
   IFS=',' read -ra _T <<< "$THEMES"
   for t in "${_T[@]}"; do THEME_FLAGS+=(--theme "$t"); done
@@ -529,6 +567,7 @@ else
   IMPORT_CMD=("npm" "run" "import-puzzle" "--" "../xword-pipeline/out/puzzles/$(basename "$PRIMARY_CLUED")")
 fi
 [[ "$EXPLAIN" -eq 1 ]] && IMPORT_CMD+=("--explanations" "../xword-pipeline/out/puzzles/$(basename "$EXPLAINED")")
+[[ -n "$DATE" ]] && IMPORT_CMD+=("--date" "$DATE")
 echo "    ${IMPORT_CMD[*]}"
 if [[ "$NO_QA" -eq 0 && "$WORST_VERDICT" != "ready" ]]; then
   echo ""
