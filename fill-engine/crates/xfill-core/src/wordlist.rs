@@ -348,7 +348,10 @@ FOO;25
         let l6: Vec<String> = (0..wl.len_data(6).n)
             .map(|i| wl.len_data(6).word_string(i))
             .collect();
-        assert!(l6.contains(&"WORDLE".to_string()), "supplemental WORDLE should be loaded");
+        assert!(
+            l6.contains(&"WORDLE".to_string()),
+            "supplemental WORDLE should be loaded"
+        );
     }
 
     /// When both supplemental and main declare the same word with different
@@ -361,8 +364,13 @@ FOO;25
         let combined = format!("{}\n{}", supplemental, main);
         let wl = Wordlist::from_str(&combined, 40);
         let l3 = wl.len_data(3);
-        let i_cat = l3.index_of(&normalize_letters("cat")).expect("CAT must be present");
-        assert_eq!(l3.scores[i_cat], 95, "supplemental's CAT;95 must win over main's CAT;75");
+        let i_cat = l3
+            .index_of(&normalize_letters("cat"))
+            .expect("CAT must be present");
+        assert_eq!(
+            l3.scores[i_cat], 95,
+            "supplemental's CAT;95 must win over main's CAT;75"
+        );
     }
 
     /// Blocklist still excludes entries even when supplemental tries to add
