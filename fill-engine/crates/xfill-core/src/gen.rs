@@ -364,7 +364,7 @@ mod tests {
         assert_eq!(p.orphan_cells(), 0, "no orphan cells");
         // block count near target
         let b = p.block_count();
-        assert!(b >= 34 && b <= 38, "block count {b} near 36");
+        assert!((34..=38).contains(&b), "block count {b} near 36");
     }
 
     #[test]

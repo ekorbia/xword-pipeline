@@ -133,6 +133,7 @@ impl Wordlist {
     ///     of score — so a mis-scored junk word can't slip into a fill), and
     ///   * a `supplemental.txt` next to the wordlist (adds new entries and
     ///     can override main-dict scores for duplicates).
+    ///
     /// Blocklist still wins if a word appears in both supplemental and
     /// blocklist.
     pub fn load(path: &str, min_score: u8) -> std::io::Result<Wordlist> {
