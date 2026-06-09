@@ -148,6 +148,46 @@ prints `blocklist: excluding N word(s)` on load. **Grow this list over time from
 your QA findings** — it's the cheapest way to permanently retire words you never
 want to see. Blocking a handful of words has no measurable effect on fill rate.
 
+### Supplemental wordlist — adding new entries
+
+The Crossword Nexus wordlist is comprehensive but lags on very recent culture
+and tech (WORDLE, CHATGPT, etc. are not in the upstream as of mid-2026).
+Add them in **`fill-engine/data/supplemental.txt`**, one per line, same
+`WORD;SCORE` format as the main dict:
+
+```
+# fill-engine/data/supplemental.txt
+CHATGPT;75
+WORDLE;75
+BLOCKCHAIN;70
+DOOMSCROLL;65
+```
+
+The engine prepends this file to the main wordlist at load time, so entries
+here are placeable just like upstream entries. On startup the engine prints
+`supplemental: N entries loaded` so you can verify the file is being read.
+
+Conventions:
+
+- Same letter-only normalization as the main dict (`E.T.` → `ET`); 3-15 letters.
+- Score 0-100. Roughly: 75+ = NYT-grade lively; 60-70 = real but slightly
+  niche; 50-59 = specific brand/jargon (placeable, flag with caution); below
+  50 acts as iffy fill and gets filtered out by `--max-iffy 0`.
+- Entries here **override** main-dict duplicates, so this file doubles as a
+  per-entry score-override mechanism for upstream entries you think were
+  mis-scored.
+- **Blocklisted entries are still excluded**, regardless of which file added
+  them — `blocklist.txt` is the strongest signal.
+
+The repository ships with ~90 seeded entries spanning recent tech, pharma,
+crypto, sports (NFL/NBA/WNBA/tennis/baseball/soccer), films (2022-2025), TV
+shows, music, pop-culture figures, politics, and online slang — including
+many "full name" entries (TRAVISKELCE, PATRICKMAHOMES, ZENDAYA, etc.) that
+are well-suited as theme answers. A small "score overrides" section at the
+end lifts a handful of upstream entries (KENDRICKLAMAR, TAYLORSWIFT, etc.)
+to scores that match their actual cultural prominence. Grow it as you spot
+missing answers in your QA findings.
+
 ---
 
 ## Fixing QA findings

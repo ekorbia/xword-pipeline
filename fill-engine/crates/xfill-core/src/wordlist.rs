@@ -55,6 +55,19 @@ fn blocklist_beside(wordlist_path: &str) -> HashSet<Box<[u8]>> {
     read_blocklist(&bl)
 }
 
+/// Raw text of a `supplemental.txt` next to the wordlist (same `WORD;SCORE`
+/// format as the main dict). Missing file → empty string. Returned as text
+/// so the loader can prepend it to the main-dict text and let the existing
+/// first-occurrence-wins dedup give supplemental entries priority over
+/// upstream duplicates.
+fn supplemental_beside(wordlist_path: &str) -> String {
+    let p = match Path::new(wordlist_path).parent() {
+        Some(d) => d.join("supplemental.txt"),
+        None => Path::new("supplemental.txt").to_path_buf(),
+    };
+    fs::read_to_string(&p).unwrap_or_default()
+}
+
 pub struct LenData {
     pub len: usize,
     pub n: usize,
@@ -115,17 +128,37 @@ pub struct Wordlist {
 }
 
 impl Wordlist {
-    /// Load the wordlist, automatically applying a `blocklist.txt` that sits
-    /// next to the wordlist file. Blocklisted words are excluded regardless of
-    /// their score — so a mis-scored junk word (e.g. one scored 100) can't slip
-    /// into a fill.
+    /// Load the wordlist, automatically applying:
+    ///   * a `blocklist.txt` next to the wordlist file (excludes regardless
+    ///     of score — so a mis-scored junk word can't slip into a fill), and
+    ///   * a `supplemental.txt` next to the wordlist (adds new entries and
+    ///     can override main-dict scores for duplicates).
+    /// Blocklist still wins if a word appears in both supplemental and
+    /// blocklist.
     pub fn load(path: &str, min_score: u8) -> std::io::Result<Wordlist> {
         let text = fs::read_to_string(path)?;
         let blocklist = blocklist_beside(path);
         if !blocklist.is_empty() {
             eprintln!("blocklist: excluding {} word(s)", blocklist.len());
         }
-        Ok(Self::from_str_filtered(&text, min_score, &blocklist))
+        // Supplemental is PREPENDED so the first-occurrence-wins dedup in
+        // from_str_filtered gives supplemental entries priority over main-dict
+        // duplicates (i.e. supplemental scores override upstream).
+        let supplemental = supplemental_beside(path);
+        let combined = if supplemental.is_empty() {
+            text
+        } else {
+            let n_entries = supplemental
+                .lines()
+                .filter(|l| {
+                    let t = l.trim();
+                    !t.is_empty() && !t.starts_with('#')
+                })
+                .count();
+            eprintln!("supplemental: {} entries loaded", n_entries);
+            format!("{}\n{}", supplemental, text)
+        };
+        Ok(Self::from_str_filtered(&combined, min_score, &blocklist))
     }
 
     pub fn from_str(text: &str, min_score: u8) -> Wordlist {
@@ -301,5 +334,53 @@ FOO;25
         assert_eq!(l5.tier_cutoff(80), 2); // ABBEY, EDGAR
         assert_eq!(l5.tier_cutoff(40), 2); // both
         assert_eq!(l5.tier_cutoff(95), 0);
+    }
+
+    /// Supplemental entries (modeled as text prepended to the main dict) are
+    /// included in the loaded wordlist with their declared scores.
+    #[test]
+    fn supplemental_adds_new_entries() {
+        // Supplemental adds WORDLE (length 6) that main doesn't have.
+        let supplemental = "WORDLE;75\n";
+        let main = "ABBEY;90\nCAT;75\n";
+        let combined = format!("{}\n{}", supplemental, main);
+        let wl = Wordlist::from_str(&combined, 40);
+        let l6: Vec<String> = (0..wl.len_data(6).n)
+            .map(|i| wl.len_data(6).word_string(i))
+            .collect();
+        assert!(l6.contains(&"WORDLE".to_string()), "supplemental WORDLE should be loaded");
+    }
+
+    /// When both supplemental and main declare the same word with different
+    /// scores, supplemental's score wins (it's prepended → seen first).
+    #[test]
+    fn supplemental_score_overrides_main() {
+        // Both files declare CAT. Supplemental's score 95 should be the one kept.
+        let supplemental = "CAT;95\n";
+        let main = "CAT;75\nDOG;75\n";
+        let combined = format!("{}\n{}", supplemental, main);
+        let wl = Wordlist::from_str(&combined, 40);
+        let l3 = wl.len_data(3);
+        let i_cat = l3.index_of(&normalize_letters("cat")).expect("CAT must be present");
+        assert_eq!(l3.scores[i_cat], 95, "supplemental's CAT;95 must win over main's CAT;75");
+    }
+
+    /// Blocklist still excludes entries even when supplemental tries to add
+    /// them — blocklist is the strongest signal.
+    #[test]
+    fn blocklist_overrides_supplemental() {
+        let supplemental = "BANNED;90\n";
+        let main = "CAT;75\n";
+        let combined = format!("{}\n{}", supplemental, main);
+        let mut block: HashSet<Box<[u8]>> = HashSet::new();
+        block.insert(normalize_letters("banned").into_boxed_slice());
+        let wl = Wordlist::from_str_filtered(&combined, 40, &block);
+        let l6: Vec<String> = (0..wl.len_data(6).n)
+            .map(|i| wl.len_data(6).word_string(i))
+            .collect();
+        assert!(
+            !l6.contains(&"BANNED".to_string()),
+            "blocklist must exclude even supplemental entries"
+        );
     }
 }
