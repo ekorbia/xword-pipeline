@@ -2,8 +2,9 @@ import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { z } from "zod";
 import type { ThemeIdeas } from "./types.js";
+import { MODELS } from "./models.js";
 
-const MODEL = "claude-opus-4-7";
+const MODEL = MODELS.themeIdea;
 
 // The constructor brief. Encodes the GRID CONSTRAINTS imposed by the xfill
 // `theme` generator so the proposed answers are actually buildable.
@@ -18,8 +19,8 @@ export const IDEATION_GUIDE = `You are a New York Times crossword theme construc
 # HARD grid constraints (a set that violates these cannot be built)
 - 1 to 4 theme answers per puzzle. (The generator places up to 4.)
 - Each theme answer is a SINGLE across entry: letters A-Z only, NO spaces or punctuation, written as one uppercase run (e.g. WAITINGFORGODOT, GETTOSECONDBASE).
-- Each answer length must be between 3 and 15, and must NOT be exactly 12 — a 12-letter answer cannot be placed as a single across in a 15-wide grid. Lengths 13, 14, and 15 are ideal; 11 and shorter also work (but NOT 12).
-- Theme answers are the marquee long entries — favor 11, 13, 14, and 15 letters. Avoid short (≤6) theme answers unless the gimmick truly needs them.
+- Each answer length must be between 3 and 15, and must NOT be exactly 12 — a 12-letter answer cannot be placed as a single across in a 15-wide grid.
+- FILL FEASIBILITY: lengths 7-11 are the sweet spot — long enough to be marquee entries, short enough that the grid around them fills reliably. Lengths 13-15 are allowed but make the surrounding fill MUCH harder (a near-full-width answer and its symmetric mirror slot cross almost every down word) — use at most one 13-15 answer per set, and only when the gimmick demands it. Avoid short (≤6) theme answers unless the gimmick truly needs them.
 - Count every answer's letters carefully and report the exact length. Double-check none is 12.
 
 # Output
@@ -54,7 +55,7 @@ export function buildIdeationMessage(opts: IdeationOpts): string {
     lines.push(`No specific topic — propose your most elegant, original ideas.`);
   }
   lines.push("");
-  lines.push("Remember the hard grid constraints: A-Z only, no spaces, each length 3-15 and never exactly 12, favor 11/13/14/15. Count letters exactly.");
+  lines.push("Remember the hard grid constraints: A-Z only, no spaces, each length 3-15 and never exactly 12. Favor 7-11 letters (fills reliably); at most one 13-15 answer per set. Count letters exactly.");
   return lines.join("\n");
 }
 
@@ -108,5 +109,5 @@ export function normalizeAnswer(text: string): NormalizedAnswer {
 /** Build a ready-to-run `theme` command for a set of normalized answers. */
 export function themeCommand(answers: string[]): string {
   const flags = answers.map((a) => `--theme ${a}`).join(" ");
-  return `(cd ../fill-engine && ./target/release/theme ${flags} --blocks 44 --candidates 150 --time 2)`;
+  return `(cd ../fill-engine && ./target/release/theme ${flags} --blocks 44 --candidates 150 --time 5)`;
 }

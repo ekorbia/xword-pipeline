@@ -3,8 +3,9 @@ import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { z } from "zod";
 import type { CluedEntry, CluedPuzzle, Day, LibraryGrid, QAReport } from "./types.js";
 import { DAY_GUIDANCE, STYLE_GUIDE } from "./styleGuide.js";
+import { MODELS } from "./models.js";
 
-const MODEL = "claude-opus-4-7";
+const MODEL = MODELS.clue;
 
 /** answer (uppercased, letters only) appears in its own clue? */
 function answerInClue(answer: string, clue: string): boolean {

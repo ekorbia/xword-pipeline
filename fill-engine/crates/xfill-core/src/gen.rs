@@ -96,26 +96,147 @@ pub fn place_themes(n: usize, lengths: &[usize]) -> Option<Vec<(usize, usize, us
     Some(out)
 }
 
+/// Every legal start column for a length-`len` across entry: the side gaps
+/// (between the bounding blocks and the grid edges) must be 0 or >= 3 cells.
+pub fn legal_starts(n: usize, len: usize) -> Vec<usize> {
+    if len > n {
+        return Vec::new();
+    }
+    (0..=(n - len))
+        .filter(|&start| {
+            let left_ok = start == 0 || start == 1 || start >= 4;
+            let rend = start + len;
+            left_ok && (rend == n || rend == n - 1 || rend + 4 <= n)
+        })
+        .collect()
+}
+
 /// Closest-to-centered start column for a length-`len` across entry such that
 /// the side gaps (between the bounding blocks and the grid edges) are legal.
 fn find_start(n: usize, len: usize) -> Option<usize> {
-    if len > n {
-        return None;
-    }
     let centered = (n - len) / 2;
-    let mut best: Option<usize> = None;
-    for start in 0..=(n - len) {
-        let left_ok = start == 0 || start == 1 || start >= 4;
-        let rend = start + len;
-        let right_ok = rend == n || rend == n - 1 || rend + 4 <= n;
-        if left_ok && right_ok {
-            let d = (start as isize - centered as isize).unsigned_abs();
-            if best.is_none_or(|b| d < (b as isize - centered as isize).unsigned_abs()) {
-                best = Some(start);
+    legal_starts(n, len)
+        .into_iter()
+        .min_by_key(|&start| (start as isize - centered as isize).unsigned_abs())
+}
+
+/// Sample a random placement variant for the theme lengths: a random
+/// theme→row assignment (permutation of the row table) and a random legal
+/// start column per theme.
+///
+/// Why: `place_themes` is deterministic — one row order, one (centered)
+/// column per length — so every generated candidate shares the exact same
+/// theme-letter alignments. If those alignments happen to create a weak
+/// crossing pattern, ALL candidates inherit it and the fill fails wholesale.
+/// Sampling variants de-correlates candidates; the screener keeps whichever
+/// alignment fills best.
+///
+/// Index i of the result is theme i's (row, col, len), matching the input
+/// order (locks are built by zipping themes with placements).
+pub fn sample_placement(
+    n: usize,
+    lengths: &[usize],
+    rng: &mut Rng,
+) -> Option<Vec<(usize, usize, usize)>> {
+    let k = lengths.len();
+    let rows: &[usize] = match k {
+        1 => &[7],
+        2 => &[3, 5],
+        3 => &[2, 4, 6],
+        4 => &[1, 3, 5, 7],
+        _ => return None,
+    };
+    // Random theme→row assignment (Fisher-Yates on a copy of the row table).
+    let mut perm: Vec<usize> = rows.to_vec();
+    for i in (1..perm.len()).rev() {
+        let j = rng.below(i + 1);
+        perm.swap(i, j);
+    }
+    let mut out = Vec::with_capacity(k);
+    for (i, &len) in lengths.iter().enumerate() {
+        let starts = legal_starts(n, len);
+        if starts.is_empty() {
+            return None;
+        }
+        let col = starts[rng.below(starts.len())];
+        out.push((perm[i], col, len));
+    }
+    // Mirror-pair rows must carry equal lengths (their centered bounds mirror
+    // onto each other). Current row tables have no mirror pairs, but keep the
+    // guard so a future table change can't silently produce broken seeds.
+    for a in 0..k {
+        for b in (a + 1)..k {
+            if out[a].0 + out[b].0 == n - 1 && lengths[a] != lengths[b] {
+                return None;
             }
         }
     }
-    best
+    Some(out)
+}
+
+/// Repair a seeded block pattern: any white run of length 1-2 that is bounded
+/// by seed blocks / grid edges can NEVER become legal — later placement only
+/// ADDS blocks, so short runs can only shrink, never grow to >= 3. Block such
+/// runs out now (symmetrically), cascading until no short run remains.
+///
+/// Without this, bounding blocks near an edge deadlock the random placer: a
+/// theme on row 2 seeds blocks at (2,c), leaving a 2-cell run above in that
+/// column; fixing it needs BOTH (0,c) and (1,c) blocked, but each rescue cell
+/// is individually illegal under `runs_ok_after`, so the outer loop fails
+/// forever regardless of --blocks.
+///
+/// Returns None if a doomed run overlaps a protected (theme) cell — that
+/// placement geometry is infeasible.
+fn repair_seed(
+    mut block: Vec<Vec<bool>>,
+    protected: &[Vec<bool>],
+    n: usize,
+) -> Option<Vec<Vec<bool>>> {
+    loop {
+        let mut to_block: Vec<(usize, usize)> = Vec::new();
+        // Like all_runs_ok: range loops keep the `== n` sentinel (closes the
+        // final run) readable; iterator forms obscure it.
+        #[allow(clippy::needless_range_loop)]
+        for r in 0..n {
+            let mut start = 0usize;
+            for c in 0..=n {
+                if c == n || block[r][c] {
+                    let run = c - start;
+                    if run > 0 && run < 3 {
+                        for cc in start..c {
+                            to_block.push((r, cc));
+                        }
+                    }
+                    start = c + 1;
+                }
+            }
+        }
+        #[allow(clippy::needless_range_loop)]
+        for c in 0..n {
+            let mut start = 0usize;
+            for r in 0..=n {
+                if r == n || block[r][c] {
+                    let run = r - start;
+                    if run > 0 && run < 3 {
+                        for rr in start..r {
+                            to_block.push((rr, c));
+                        }
+                    }
+                    start = r + 1;
+                }
+            }
+        }
+        if to_block.is_empty() {
+            return Some(block);
+        }
+        for (r, c) in to_block {
+            if protected[r][c] || protected[n - 1 - r][n - 1 - c] {
+                return None;
+            }
+            block[r][c] = true;
+            block[n - 1 - r][n - 1 - c] = true;
+        }
+    }
 }
 
 fn themes_intact(block: &[Vec<bool>], placements: &[(usize, usize, usize)], n: usize) -> bool {
@@ -174,6 +295,8 @@ pub fn generate_themed(
             return None;
         }
     }
+    // Block out runs the bounding blocks have already doomed (see repair_seed).
+    let seed = repair_seed(seed, &protected, n)?;
     let seed_blocks: usize = seed.iter().flatten().filter(|&&b| b).count();
 
     for _ in 0..max_outer {
@@ -378,6 +501,77 @@ mod tests {
         // full-width and clean lengths center fine
         assert_eq!(find_start(15, 15), Some(0));
         assert_eq!(find_start(15, 13), Some(1));
+    }
+
+    #[test]
+    fn legal_starts_all_legal() {
+        for len in 3..=15usize {
+            if len == 12 {
+                assert!(legal_starts(15, len).is_empty(), "12 is unplaceable");
+                continue;
+            }
+            let starts = legal_starts(15, len);
+            assert!(!starts.is_empty(), "len {len} must have a legal start");
+            for s in starts {
+                let left_ok = s == 0 || s == 1 || s >= 4;
+                let rend = s + len;
+                assert!(left_ok && (rend == 15 || rend == 14 || rend + 4 <= 15));
+            }
+        }
+    }
+
+    #[test]
+    fn sample_placement_valid_and_diverse() {
+        let lengths = [7usize, 8, 8];
+        let mut rng = Rng::new(11);
+        let mut variants = std::collections::HashSet::new();
+        for _ in 0..50 {
+            let p = sample_placement(15, &lengths, &mut rng).expect("placeable");
+            assert_eq!(p.len(), 3);
+            let mut rows_seen = std::collections::HashSet::new();
+            for (i, &(r, c, len)) in p.iter().enumerate() {
+                assert_eq!(len, lengths[i], "placement {i} keeps input order");
+                assert!([2usize, 4, 6].contains(&r), "row from the k=3 table");
+                assert!(rows_seen.insert(r), "rows distinct");
+                assert!(legal_starts(15, len).contains(&c), "column legal");
+            }
+            variants.insert(format!("{p:?}"));
+        }
+        assert!(
+            variants.len() > 5,
+            "sampling must produce variety, got {} distinct",
+            variants.len()
+        );
+    }
+
+    /// Regression: a 3-theme set with a sub-15 first answer puts bounding
+    /// blocks on row 2, dooming the 2-cell runs above them in those columns.
+    /// Before repair_seed, the one-block-at-a-time placer could never rescue
+    /// them (each rescue cell is individually illegal), so NO template could
+    /// be generated at ANY block count — themed mode was unusable for the
+    /// documented 3-theme workflow unless the first theme was 15 letters.
+    #[test]
+    fn generates_themed_grid_short_themes_row2() {
+        use crate::grid::Dir;
+        let lengths = [7usize, 8, 8]; // e.g. HOMERUN, HATTRICK, SLAMDUNK
+        let placements = place_themes(15, &lengths).expect("placeable");
+        let mut rng = Rng::new(3);
+        let mut got = None;
+        for _ in 0..40 {
+            if let Some(t) = generate_themed(15, &placements, 44, &mut rng, 300) {
+                got = Some(t);
+                break;
+            }
+        }
+        let t = got.expect("repair_seed must unlock 7/8/8 themed generation");
+        let p = Puzzle::from_template(&t);
+        assert_eq!(p.orphan_cells(), 0);
+        for &(r, c, len) in &placements {
+            let ei = p
+                .find_entry(r, c, Dir::Across)
+                .expect("theme slot is an entry");
+            assert_eq!(p.entries[ei].len, len);
+        }
     }
 
     #[test]

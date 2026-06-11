@@ -38,9 +38,9 @@ MODE="themeless"
 SIZE=15            # grid dimension (themeless only; themed is 15-only for now)
 BLOCKS=""          # default: ~16% of grid area themeless / 44 themed
 CANDIDATES=200
-TIME=2
-KEEP_MEAN=78
-MAX_IFFY=0
+TIME=""            # per-grid fill budget; resolved by mode after arg parsing (2 themeless / 5 themed)
+KEEP_MEAN=""       # quality floor; resolved by mode after arg parsing (78 themeless / 68 themed)
+MAX_IFFY=""        # iffy cap; resolved by mode after arg parsing (0 themeless / 12 themed)
 TOP=20
 GRID=0
 DAY=""             # empty → clue writer picks (Saturday themeless / Wednesday themed)
@@ -65,9 +65,10 @@ Usage: run-pipeline.sh [options]
   --themes A,B,C            Theme answers (required for --mode themed; A-Z, no spaces)
   --blocks N                Black squares per grid (default: ~16% of area themeless / 44 themed)
   --candidates N            Random grids to generate & screen (default: 200)
-  --time SECS               Per-grid fill budget (default: 2)
-  --keep-mean F             Keep grids with mean answer-score >= F (default: 78)
-  --max-iffy N              Keep grids with <= N entries scoring below 50 (default: 0)
+  --time SECS               Per-grid fill budget (default: 2 themeless / 5 themed)
+  --keep-mean F             Keep grids with mean answer-score >= F (default: 78 themeless / 68 themed —
+                            themed fills are far more constrained; themeless gates would discard them all)
+  --max-iffy N              Keep grids with <= N entries scoring below 50 (default: 0 themeless / 12 themed)
   --top N                   Keep the best N grids in the library (default: 20)
   --grid N                  Which library grid to clue (default: 0 = best)
   --day DAY                 Monday..Saturday, or Easy/Medium/Tricky/Hard/Expert (default: mode-based)
@@ -114,6 +115,12 @@ interactive_prompt() {
   echo ""
 
   MODE="themeless"
+  # Resolve themeless defaults now so the advanced prompts and the confirm
+  # screen show real values (the post-parse mode-aware resolution would
+  # otherwise leave these blank until after the wizard finishes).
+  KEEP_MEAN="${KEEP_MEAN:-78}"
+  MAX_IFFY="${MAX_IFFY:-0}"
+  TIME="${TIME:-2}"
 
   # Q1: grid size
   while true; do
@@ -310,6 +317,21 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# ---- mode-aware quality/time defaults (only when not explicitly set) ----
+# Themed grids are far more constrained than themeless (locked theme rows plus
+# equal-length mirror slots), so the themeless gates would discard nearly every
+# successful themed fill and the themeless time budget starves the solver.
+# Match the theme binary's own tuning unless the user explicitly overrides.
+if [[ "$MODE" == "themed" ]]; then
+  : "${KEEP_MEAN:=68}"
+  : "${MAX_IFFY:=12}"
+  : "${TIME:=5}"
+else
+  : "${KEEP_MEAN:=78}"
+  : "${MAX_IFFY:=0}"
+  : "${TIME:=2}"
+fi
+
 # ---- validate --date format, auto-derive NAME from --date if NAME unset ----
 if [[ -n "$DATE" ]]; then
   if [[ ! "$DATE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
@@ -387,7 +409,7 @@ elif [[ "$MODE" == "themed" ]]; then
   for t in "${_T[@]}"; do THEME_FLAGS+=(--theme "$t"); done
   "$ENGINE/target/release/theme" \
     --wordlist "$WORDLIST" "${THEME_FLAGS[@]}" --blocks "$BLOCKS" --candidates "$CANDIDATES" \
-    --time "$TIME" --keep-mean "$KEEP_MEAN" --max-iffy "$MAX_IFFY" --top "$TOP" --out "$LIB"
+    --time "$TIME" --keep-mean "$KEEP_MEAN" --max-iffy "$MAX_IFFY" --top "$TOP" --seed "$SEED" --out "$LIB"
 else
   echo "error: --mode must be 'themeless' or 'themed'" >&2; exit 2
 fi
@@ -399,6 +421,10 @@ if [[ "${COUNT:-0}" -eq 0 ]]; then
   echo "" >&2
   echo "No grids passed the quality gates (mean>=$KEEP_MEAN, iffy<=$MAX_IFFY)." >&2
   echo "Try: lower --keep-mean, raise --max-iffy, raise --candidates, or change --blocks." >&2
+  if [[ "$MODE" == "themed" ]]; then
+    echo "Themed hints: raise --time (e.g. 8) and --max-iffy (e.g. 18); shorter theme answers" >&2
+    echo "(7-11 letters) fill far better than 13-15 — a full-width answer crosses every down word." >&2
+  fi
   exit 1
 fi
 echo "    library: $LIB ($COUNT clean grids)"

@@ -86,10 +86,13 @@ fn main() {
         jobs.len()
     );
 
-    // Phase 2: parallel fill, keep only clean fills.
+    // Phase 2: parallel fill, keep only clean fills. Workers stop early once
+    // the library has plenty of clean grids (2x what we'll keep).
+    let stop_at = top * 2;
     let next = AtomicUsize::new(0);
     let done = AtomicUsize::new(0);
     let kept: Mutex<Vec<LibGrid>> = Mutex::new(Vec::new());
+    let kept_count = AtomicUsize::new(0);
     let filled = AtomicUsize::new(0);
     let no_theme: HashSet<usize> = HashSet::new();
     let t0 = Instant::now();
@@ -97,6 +100,9 @@ fn main() {
     std::thread::scope(|s| {
         for _ in 0..workers {
             s.spawn(|| loop {
+                if kept_count.load(Ordering::Relaxed) >= stop_at {
+                    break;
+                }
                 let i = next.fetch_add(1, Ordering::Relaxed);
                 if i >= jobs.len() {
                     break;
@@ -122,6 +128,7 @@ fn main() {
                     continue;
                 }
                 kept.lock().unwrap().push(g);
+                kept_count.fetch_add(1, Ordering::Relaxed);
             });
         }
     });
@@ -134,11 +141,17 @@ fn main() {
     kept.truncate(top);
 
     let filled_n = filled.load(Ordering::Relaxed);
+    let done_n = done.load(Ordering::Relaxed);
     eprintln!(
-        "\nfilled {filled_n}/{} in {dur:.1}s; {} clean grids kept (mean>={keep_mean}, iffy<={max_iffy})",
-        jobs.len(),
+        "\nfilled {filled_n}/{done_n} in {dur:.1}s; {} clean grids kept (mean>={keep_mean}, iffy<={max_iffy})",
         kept.len()
     );
+    if done_n < jobs.len() {
+        eprintln!(
+            "(early stop: {stop_at} clean grids kept after {done_n} of {} candidates)",
+            jobs.len()
+        );
+    }
 
     write_json(&out, &kept, &wordlist, blocks, &[]).expect("write library file");
     eprintln!("wrote {} grids to {out}", kept.len());

@@ -207,13 +207,13 @@ keeping the cleanest fill.
 
 ```bash
 ./target/release/theme \
-    --theme WAITINGFORGODOT --theme ROCKETSCIENCE --theme TROMBONE \
-    --blocks 44 --candidates 150 --time 2
+    --theme HOMERUN --theme HATTRICK --theme SLAMDUNK \
+    --blocks 44 --candidates 150 --time 5
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--theme ANSWER` | (≥1 required) | A theme answer (A–Z), repeatable. 1–4 themes supported |
+| `--theme ANSWER` | (≥1 required) | A theme answer (A–Z), repeatable. 1–4 themes supported. **7–11 letters fill best**; a 13–15 letter answer (and its full-width mirror slot) crosses most of the grid and is much harder to fill. Never exactly 12 |
 | `--blocks N` | `40` | Target black squares (themed grids want more — 42–44 — to ease the fill) |
 | `--candidates N` | `100` | Themed grids to generate and try |
 | `--time SECS` | `3.0` | Per-grid fill budget |

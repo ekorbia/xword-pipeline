@@ -41,7 +41,10 @@ xword-pipeline/
 ```
 
 The fill engine is pure Rust and runs offline (free). The clue/QA/theme steps
-call **Claude Opus 4.7** and need an API key.
+call Claude and need an API key. Each step uses the cheapest model that holds
+its quality bar (see `clue-writer/src/models.ts`): **Opus 4.7** for clue
+writing and QA, **Sonnet 4.6** for theme ideation, **Haiku 4.5** for the
+post-solve explainer.
 
 ---
 
@@ -92,14 +95,14 @@ prints the three artifact paths and the verdict.
 |------|---------|-------|
 | `--mode themeless\|themed` | `themeless` | Themed requires `--themes` |
 | `--size N` | `15` | **Themeless only.** Grid dimension — e.g. `5` or `10` for minis. Themed grids are 15×15 for now |
-| `--themes A,B,C` | — | Theme answers (A–Z, no spaces). 1–4 answers; each 3–15 letters but **never exactly 12** (a 12-letter answer can't be placed as a single across in a 15-wide grid) |
+| `--themes A,B,C` | — | Theme answers (A–Z, no spaces). 1–4 answers; each 3–15 letters but **never exactly 12** (a 12-letter answer can't be placed as a single across in a 15-wide grid). **7–11 letters fill best** — a 13–15 letter answer and its full-width mirror slot cross most of the grid, so use at most one per set |
 | `--blocks N` | ~16% of area ± ~10% / 44 ± ~10% | Black squares. Default is ~16% of the grid area with a seeded ±10% jitter (15→32-40, 10→14-18, 5→3-5); themed grids default to 44 with the same jitter shape and a 42-block floor. Pass an explicit N to disable jitter. Reproducible via `--seed` |
 | `--day DAY` | Saturday / Wednesday | Clue difficulty. Accepts a day (Monday…Saturday) **or** a friendly word: `Easy`=Mon, `Medium`=Wed, `Tricky`=Thu, `Hard`=Fri, `Expert`=Sat |
 | `--grid N` | `0` | Which library grid to clue (`0` = highest quality) |
-| `--keep-mean F` | `78` | **Quality floor.** Keep only grids whose mean answer-score ≥ F |
-| `--max-iffy N` | `0` | **The key fill-quality lever** — see below |
+| `--keep-mean F` | `78` / `68` themed | **Quality floor.** Keep only grids whose mean answer-score ≥ F. Themed fills are far more constrained, so themed mode auto-relaxes to 68 unless you override |
+| `--max-iffy N` | `0` / `12` themed | **The key fill-quality lever** — see below. Themed mode auto-relaxes to 12 |
 | `--candidates N` | `200` | How many random grids to generate & screen |
-| `--time SECS` | `2` | Per-grid fill budget |
+| `--time SECS` | `2` / `5` themed | Per-grid fill budget. Themed grids need the deeper search |
 | `--top N` | `20` | How many of the best grids to keep in the library |
 | `--explain-model <id>` | `claude-haiku-4-5` | Model for the post-solve explainer (used only with `--explain`). Pass `claude-opus-4-7` to restore the previous, higher-cost behavior |
 | `--name ID` | `<mode>-grid<GRID>` | Output-file prefix override. Use unique names across runs to prevent file collisions (the batch orchestrator does this automatically; specify manually only for ad-hoc multi-puzzle runs) |
@@ -120,8 +123,9 @@ the clues and the QA verdict — turns out. Two flags control it:
     written. If your QA reports keep flagging weak fill, this is the fix.
   - Trade-off: stricter gates reject more grids, so pair a strict `--max-iffy`
     with a higher `--candidates` (e.g. `--max-iffy 0 --candidates 400`) so enough
-    grids survive. Themed grids are harder to fill cleanly, so you may need to
-    relax to `--max-iffy 4`–`8` for themed mode.
+    grids survive. Themed grids are far harder to fill cleanly, so **themed mode
+    automatically relaxes to `--max-iffy 12 --keep-mean 68 --time 5`** unless you
+    pass explicit values.
 - **`--keep-mean F`** — raises the *average* answer quality (not just the floor).
   78–80 yields polished, lively grids; lower it toward 70 if too few grids pass.
 
@@ -283,7 +287,7 @@ player's `import-puzzle` derives the manifest `difficulty` label from the
 > onto [wordfuzz.com/test](https://wordfuzz.com/test) — it's the same engine
 > that powers the daily puzzles, running entirely in your browser.
 
-Cost: ~N× clue + N× QA + 1× explain per puzzle on Opus 4.7, where N is the
+Cost: ~N× clue + N× QA per puzzle on Opus 4.7, + 1× explain on Haiku, where N is the
 number of tiers. Backward compatible — single-tier puzzles imported the old
 positional way (`<clued.json>`) still work.
 
@@ -369,12 +373,14 @@ can be run directly:
 | Step | API? | Cost |
 |---|---|---|
 | `fill-engine` (grid generation) | No | free, seconds |
-| `theme-idea` / `clue` / `qa` / `revise` | Yes | a few cents each (Opus 4.7) |
+| `clue` / `qa` / `revise` | Yes | a few cents each (Opus 4.7) |
+| `theme-idea` | Yes | ~60% cheaper (Sonnet 4.6 — brainstorming with a human filter) |
 | `explain` | Yes | ~1/5 of the above (Haiku 4.5 by default; override with `--explain-model`) |
 
 - **Themeless fills cleaner than themed.** Themed grids carry the theme answers
-  plus equal-length mirror slots, so they're harder to fill — expect to relax
-  `--max-iffy` and raise `--blocks`/`--candidates` for themed mode.
+  plus equal-length mirror slots, so they're harder to fill — the pipeline
+  auto-relaxes themed gates to `--keep-mean 68 --max-iffy 12 --time 5`. Theme
+  answers of 7–11 letters fill far better than 13–15.
 - Every Claude command has a `--dry-run` flag to preview the prompt for free.
 
 ---

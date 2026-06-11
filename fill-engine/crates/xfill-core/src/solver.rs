@@ -432,7 +432,12 @@ impl<'a> Solver<'a> {
 
         for w in candidates {
             let frame = self.assign(ei, w);
-            let dead = frame.nbrs.iter().any(|(_, _, c)| *c == 0);
+            // Forward check on the POST-propagation counts (frame.nbrs holds the
+            // saved pre-assignment values for undo — checking those never fires).
+            let dead = frame
+                .nbrs
+                .iter()
+                .any(|(nbr, _, _)| self.dom_count[*nbr] == 0);
             if !dead {
                 let r = self.recurse();
                 if r == Outcome::Solved {

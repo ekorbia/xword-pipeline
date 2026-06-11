@@ -2,8 +2,9 @@ import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { z } from "zod";
 import type { CluedPuzzle, QAReport } from "./types.js";
+import { MODELS } from "./models.js";
 
-const MODEL = "claude-opus-4-7";
+const MODEL = MODELS.qa;
 
 export const EDITOR_GUIDE = `You are the test-solving editor for a New York Times-caliber crossword. You receive a FINISHED puzzle — the filled grid plus every clue — and produce a rigorous editorial review. Your job is to catch what a careful editor catches before publication. Be specific, fair, and concrete; every finding must name a location and a fix.
 

@@ -67,7 +67,10 @@ fn main() {
             .unwrap_or(1),
     );
 
-    // Auto-place theme answers as across slots.
+    // Validate the set is placeable at all (canonical placement, printed for
+    // reference). Each candidate then samples its own placement variant so
+    // theme-letter alignments vary across candidates instead of dooming all
+    // of them identically.
     let lengths: Vec<usize> = themes.iter().map(|t| t.len()).collect();
     let placements = match gen::place_themes(15, &lengths) {
         Some(p) => p,
@@ -79,7 +82,7 @@ fn main() {
             std::process::exit(1);
         }
     };
-    eprintln!("theme placements (row,col,len):");
+    eprintln!("theme placements (canonical; per-candidate variants are sampled):");
     for (i, &(r, c, l)) in placements.iter().enumerate() {
         eprintln!("  {} -> r{r}c{c} A len{l}   {}", themes[i], themes[i]);
     }
@@ -89,19 +92,26 @@ fn main() {
     eprintln!("wordlist loaded in {:.1}s", t.elapsed().as_secs_f64());
 
     // Phase 1: generate valid themed grids (deterministic, single-thread).
+    // Each candidate carries its own sampled placement variant.
     let mut rng = Rng::new(seed);
-    let mut jobs: Vec<(String, u64)> = Vec::new();
+    type Placement = Vec<(usize, usize, usize)>;
+    let mut jobs: Vec<(String, u64, Placement)> = Vec::new();
     let mut tries = 0;
     while jobs.len() < candidates && tries < candidates * 40 {
         tries += 1;
         let jseed = rng.next_u64();
-        if let Some(tpl) = gen::generate_themed(15, &placements, blocks, &mut rng, 200) {
-            jobs.push((tpl, jseed));
+        let Some(placement) = gen::sample_placement(15, &lengths, &mut rng) else {
+            continue;
+        };
+        if let Some(tpl) = gen::generate_themed(15, &placement, blocks, &mut rng, 200) {
+            jobs.push((tpl, jseed, placement));
         }
     }
     if jobs.is_empty() {
         eprintln!(
-            "failed to generate any themed grid at {blocks} blocks — try a different --blocks"
+            "failed to generate any themed grid at {blocks} blocks around these placements.\n\
+             hints: try a different --blocks (42-46 works best), fewer theme answers, or\n\
+             shorter ones — 7-11 letters give the generator the most room."
         );
         std::process::exit(1);
     }
@@ -110,23 +120,15 @@ fn main() {
         jobs.len()
     );
 
-    // Locks: lock each theme answer into its across slot.
-    let locks: Vec<Lock> = placements
-        .iter()
-        .enumerate()
-        .map(|(i, &(r, c, _))| Lock {
-            row: r,
-            col: c,
-            dir: Dir::Across,
-            answer: themes[i].clone(),
-        })
-        .collect();
-
     // Phase 2: parallel fill; keep clean themed fills for the library, plus the
-    // single best fill (regardless of threshold) to display.
+    // single best fill (regardless of threshold) to display. Locks are built
+    // per job from that job's sampled placement. Workers stop early once the
+    // library has plenty of clean grids (2x what we'll keep).
+    let stop_at = top * 2;
     let next = AtomicUsize::new(0);
     let done = AtomicUsize::new(0);
     let filled = AtomicUsize::new(0);
+    let kept_count = AtomicUsize::new(0);
     let kept: Mutex<Vec<LibGrid>> = Mutex::new(Vec::new());
     let best_boxed: Mutex<Option<(f64, usize, String)>> = Mutex::new(None);
     let t0 = Instant::now();
@@ -134,18 +136,31 @@ fn main() {
     std::thread::scope(|s| {
         for _ in 0..workers {
             s.spawn(|| loop {
+                if kept_count.load(Ordering::Relaxed) >= stop_at {
+                    break;
+                }
                 let i = next.fetch_add(1, Ordering::Relaxed);
                 if i >= jobs.len() {
                     break;
                 }
-                let (tpl, jseed) = &jobs[i];
+                let (tpl, jseed, placement) = &jobs[i];
                 let p = Puzzle::from_template(tpl);
+                let locks: Vec<Lock> = placement
+                    .iter()
+                    .enumerate()
+                    .map(|(ti, &(r, c, _))| Lock {
+                        row: r,
+                        col: c,
+                        dir: Dir::Across,
+                        answer: themes[ti].clone(),
+                    })
+                    .collect();
                 let mut solver = match Solver::with_locks(&p, &wl, &locks) {
                     Ok(s) => s,
                     Err(_) => continue,
                 };
                 // Identify the locked theme entry ids for this grid.
-                let theme_ids: HashSet<usize> = placements
+                let theme_ids: HashSet<usize> = placement
                     .iter()
                     .filter_map(|&(r, c, _)| p.find_entry(r, c, Dir::Across))
                     .collect();
@@ -173,6 +188,7 @@ fn main() {
                 }
                 if g.mean >= keep_mean && g.iffy <= max_iffy {
                     kept.lock().unwrap().push(g);
+                    kept_count.fetch_add(1, Ordering::Relaxed);
                 }
             });
         }
@@ -188,8 +204,15 @@ fn main() {
     write_json(&out, &kept, &wordlist, blocks, &themes).expect("write themed library");
 
     let filled_n = filled.load(Ordering::Relaxed);
+    let done_n = done.load(Ordering::Relaxed);
     println!("\n===== THEMED: {} answers, {blocks} blocks, {} grids, {time}s each, {workers} workers =====", themes.len(), jobs.len());
-    println!("filled {filled_n}/{} themed grids in {dur:.1}s", jobs.len());
+    println!("filled {filled_n}/{done_n} themed grids in {dur:.1}s");
+    if done_n < jobs.len() {
+        println!(
+            "(early stop: {stop_at} clean grids kept after {done_n} of {} candidates)",
+            jobs.len()
+        );
+    }
     println!(
         "clean grids kept (mean>={keep_mean}, iffy<={max_iffy}): {} -> wrote {out}",
         kept.len()
@@ -202,7 +225,9 @@ fn main() {
             println!("{boxed}");
         }
         None => println!(
-            "no themed grid could be filled — try more --candidates or a different --blocks"
+            "no themed grid could be filled — try a longer --time (e.g. 8), more --candidates,\n\
+             or shorter theme answers (7-11 letters fill best; a 13-15 letter theme and its\n\
+             full-width mirror slot cross most of the grid and are much harder to fill)"
         ),
     }
 }

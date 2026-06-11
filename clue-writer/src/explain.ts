@@ -3,14 +3,14 @@ import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { z } from "zod";
 import type { CluedEntry, CluedPuzzle } from "./types.js";
 
+import { MODELS } from "./models.js";
+
 /**
- * Default model for the explain pass. Haiku 4.5 is the right default here:
- * explanations are short, factual "why this answer fits the clue" lines, not
- * wordplay — Haiku handles them well at ~1/5 the input cost and ~1/5 the output
- * cost of Opus, and noticeably faster. Callers can override with the `model`
- * option (e.g. `claude-opus-4-7` for higher-quality wit on tricky puzzles).
+ * Default model for the explain pass (see models.ts for the rationale).
+ * Callers can override with the `model` option (e.g. `claude-opus-4-7` for
+ * higher-quality wit on tricky puzzles).
  */
-export const DEFAULT_EXPLAIN_MODEL = "claude-haiku-4-5";
+export const DEFAULT_EXPLAIN_MODEL: string = MODELS.explain;
 
 /**
  * Whether the given model supports `thinking: { type: "adaptive" }` AND the
