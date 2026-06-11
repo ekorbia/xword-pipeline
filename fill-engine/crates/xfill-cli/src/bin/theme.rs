@@ -129,6 +129,9 @@ fn main() {
     let done = AtomicUsize::new(0);
     let filled = AtomicUsize::new(0);
     let kept_count = AtomicUsize::new(0);
+    let dup_rejects = AtomicUsize::new(0);
+    let dup_examples: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    let dup_checker = xfill_core::dup::DupChecker::new(&wl);
     let kept: Mutex<Vec<LibGrid>> = Mutex::new(Vec::new());
     let best_boxed: Mutex<Option<(f64, usize, String)>> = Mutex::new(None);
     let t0 = Instant::now();
@@ -187,6 +190,22 @@ fn main() {
                     }
                 }
                 if g.mean >= keep_mean && g.iffy <= max_iffy {
+                    // Root-duplicate gate (stems, containment, shared embedded
+                    // words); theme-vs-theme pairs are exempt (theme sets may
+                    // share a word deliberately).
+                    let answers: Vec<(String, bool)> = g
+                        .entries
+                        .iter()
+                        .map(|e| (e.answer.clone(), e.theme))
+                        .collect();
+                    if let Some((a, b)) = dup_checker.find_dup(&answers) {
+                        dup_rejects.fetch_add(1, Ordering::Relaxed);
+                        let mut ex = dup_examples.lock().unwrap();
+                        if ex.len() < 5 {
+                            ex.push(format!("{a}/{b}"));
+                        }
+                        continue;
+                    }
                     kept.lock().unwrap().push(g);
                     kept_count.fetch_add(1, Ordering::Relaxed);
                 }
@@ -211,6 +230,14 @@ fn main() {
         println!(
             "(early stop: {stop_at} clean grids kept after {done_n} of {} candidates)",
             jobs.len()
+        );
+    }
+    let dup_n = dup_rejects.load(Ordering::Relaxed);
+    if dup_n > 0 {
+        let ex = dup_examples.into_inner().unwrap();
+        println!(
+            "({dup_n} clean fill(s) rejected for root-duplicate answers: {})",
+            ex.join(", ")
         );
     }
     println!(

@@ -3,6 +3,7 @@ import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { z } from "zod";
 import type { CluedPuzzle, QAReport } from "./types.js";
 import { MODELS } from "./models.js";
+import { streamStructured, STRUCTURED_MAX_TOKENS } from "./llm.js";
 
 const MODEL = MODELS.qa;
 
@@ -69,20 +70,18 @@ export function buildReviewMessage(p: CluedPuzzle): string {
 }
 
 export async function reviewPuzzle(p: CluedPuzzle, client = new Anthropic()): Promise<{ report: QAReport; usage: { input: number; output: number; cacheRead: number } }> {
-  const response = await client.messages.parse({
-    model: MODEL,
-    max_tokens: 16000,
-    thinking: { type: "adaptive" },
-    system: [{ type: "text", text: EDITOR_GUIDE, cache_control: { type: "ephemeral", ttl: "1h" } }],
-    output_config: { effort: "high", format: zodOutputFormat(QAReportSchema) },
-    messages: [{ role: "user", content: buildReviewMessage(p) }],
-  });
-  if (!response.parsed_output) {
-    throw new Error(`Reviewer returned no structured report (stop_reason: ${response.stop_reason}).`);
-  }
-  const u = response.usage;
-  return {
-    report: response.parsed_output,
-    usage: { input: u.input_tokens, output: u.output_tokens, cacheRead: u.cache_read_input_tokens ?? 0 },
-  };
+  const { output: report, usage } = await streamStructured(
+    client,
+    {
+      model: MODEL,
+      max_tokens: STRUCTURED_MAX_TOKENS,
+      thinking: { type: "adaptive" },
+      system: [{ type: "text", text: EDITOR_GUIDE, cache_control: { type: "ephemeral", ttl: "1h" } }],
+      output_config: { effort: "high", format: zodOutputFormat(QAReportSchema) },
+      messages: [{ role: "user", content: buildReviewMessage(p) }],
+    },
+    QAReportSchema,
+    "QA reviewer",
+  );
+  return { report, usage };
 }

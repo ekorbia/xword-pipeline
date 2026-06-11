@@ -2,7 +2,7 @@
 
 The **Claude layer** of the crossword pipeline. Three tools, all built on the
 official `@anthropic-ai/sdk` (per-step models live in `src/models.ts`:
-Opus 4.7 for clue/QA, Sonnet 4.6 for theme ideation, Haiku 4.5 for the
+Opus 4.7 for clue/QA, Opus 4.8 for theme ideation, Haiku 4.5 for the
 explainer), adaptive thinking,
 `effort: high`, prompt-cached system prompts, and structured (zod) output:
 

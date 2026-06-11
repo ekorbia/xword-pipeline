@@ -9,6 +9,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname } from "node:path";
 import type { CluedPuzzle, Day, LibraryFile, QAReport } from "./types.js";
 import { buildReviseMessage, buildUserMessage, reviseClues, writeClues } from "./clueWriter.js";
+import { findAnswerInClueDups } from "./dupCheck.js";
 import { defaultDay, difficultyWord, dayLabel, normalizeDay } from "./styleGuide.js";
 
 const PUZZLES_DIR = "../out/puzzles";
@@ -143,10 +144,38 @@ async function runWrite(input: string, gridIdx: number, dayArg: Day | undefined,
       `  (in ${result.usage.input} / out ${result.usage.output} tok, cache read ${result.usage.cacheRead})`,
   );
   if (result.warnings.length) console.error(`warnings:\n  ${result.warnings.join("\n  ")}`);
+
+  // Deterministic answer-in-clue dup check. Violations get ONE targeted
+  // auto-revise pass (only the flagged clues are rewritten) before the puzzle
+  // is written, so they never surface as high-severity QA findings.
+  const dups = findAnswerInClueDups(puzzle.across, puzzle.down);
+  if (dups.length > 0) {
+    console.error(`\ndup check: ${dups.length} answer-in-clue violation(s) — auto-revising:`);
+    for (const f of dups) console.error(`  · ${f.location}: ${f.issue}`);
+    const report: QAReport = {
+      verdict: "needs-work",
+      summary: "Deterministic dup check: grid answers appear in clues.",
+      findings: dups,
+    };
+    const rev = await reviseClues(puzzle, report);
+    puzzle.across = rev.across;
+    puzzle.down = rev.down;
+    for (const c of rev.changed) {
+      console.error(`  ${c.num}${c.dir} (${c.answer})\n    - ${c.before}\n    + ${c.after}`);
+    }
+    const left = findAnswerInClueDups(puzzle.across, puzzle.down);
+    if (left.length > 0) {
+      console.error(
+        `warning: ${left.length} dup violation(s) remain after auto-revise (QA will flag them):\n  ${left.map((f) => `${f.location}: ${f.issue}`).join("\n  ")}`,
+      );
+    } else {
+      console.error("dup check: clean after auto-revise");
+    }
+  }
   console.error("\nACROSS");
-  for (const e of result.across) console.error(`  ${e.num}. ${e.clue}   (${e.answer})`);
+  for (const e of puzzle.across) console.error(`  ${e.num}. ${e.clue}   (${e.answer})`);
   console.error("\nDOWN");
-  for (const e of result.down) console.error(`  ${e.num}. ${e.clue}   (${e.answer})`);
+  for (const e of puzzle.down) console.error(`  ${e.num}. ${e.clue}   (${e.answer})`);
 
   const outPath = outPathFor(out, input, `.clued.${day.toLowerCase()}.json`);
   writeJson(outPath, puzzle);

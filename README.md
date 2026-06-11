@@ -43,7 +43,7 @@ xword-pipeline/
 The fill engine is pure Rust and runs offline (free). The clue/QA/theme steps
 call Claude and need an API key. Each step uses the cheapest model that holds
 its quality bar (see `clue-writer/src/models.ts`): **Opus 4.7** for clue
-writing and QA, **Sonnet 4.6** for theme ideation, **Haiku 4.5** for the
+writing and QA, **Opus 4.8** for theme ideation, **Haiku 4.5** for the
 post-solve explainer.
 
 ---
@@ -128,6 +128,16 @@ the clues and the QA verdict — turns out. Two flags control it:
     pass explicit values.
 - **`--keep-mean F`** — raises the *average* answer quality (not just the floor).
   78–80 yields polished, lively grids; lower it toward 70 if too few grids pass.
+
+Independent of both gates, the screeners also reject any fill containing
+**root-duplicate answers** — shared stems (TEN/TENTH, EVEN/UNEVENLY), one
+answer inside another (HOME/HOMERUN), or a prominent word embedded in two
+answers (BALL in BASEBALL/SEVEBALLESTEROS) — historically the most common
+high-severity QA finding. The offending pairs are printed when rejections
+happen. Theme-vs-theme pairs are exempt, since theme sets often share a word
+deliberately. The clue writer additionally runs a
+deterministic answer-in-clue check after writing (no grid answer may appear in
+any clue) and auto-revises just the violating clues before the QA step.
 
 ```bash
 # Strict: only flawless-fill grids (screen more candidates to compensate)
@@ -374,7 +384,7 @@ can be run directly:
 |---|---|---|
 | `fill-engine` (grid generation) | No | free, seconds |
 | `clue` / `qa` / `revise` | Yes | a few cents each (Opus 4.7) |
-| `theme-idea` | Yes | ~60% cheaper (Sonnet 4.6 — brainstorming with a human filter) |
+| `theme-idea` | Yes | a few cents each (Opus 4.8) |
 | `explain` | Yes | ~1/5 of the above (Haiku 4.5 by default; override with `--explain-model`) |
 
 - **Themeless fills cleaner than themed.** Themed grids carry the theme answers

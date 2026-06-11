@@ -4,6 +4,7 @@ import { z } from "zod";
 import type { CluedEntry, CluedPuzzle, Day, LibraryGrid, QAReport } from "./types.js";
 import { DAY_GUIDANCE, STYLE_GUIDE } from "./styleGuide.js";
 import { MODELS } from "./models.js";
+import { streamStructured, STRUCTURED_MAX_TOKENS } from "./llm.js";
 
 const MODEL = MODELS.clue;
 
@@ -54,7 +55,7 @@ export function buildUserMessage(grid: LibraryGrid, day: Day): string {
   down.forEach((e) => lines.push(fmt(e)));
   lines.push("");
   lines.push(
-    "Return the clues as structured output: an array with one object per answer { num, dir, answer, clue }. Echo each answer back so the mapping is unambiguous. Remember: never put the answer (or a word sharing its root) in its own clue.",
+    "Return the clues as structured output: an array with one object per answer { num, dir, answer, clue }. Echo each answer back so the mapping is unambiguous. Remember: never put the answer (or a word sharing its root) in its own clue — and no grid answer may appear in ANY clue in the puzzle; cross-check every clue against the full answer list above.",
   );
   return lines.join("\n");
 }
@@ -69,26 +70,26 @@ export interface WriteCluesResult {
 export async function writeClues(grid: LibraryGrid, day: Day, client = new Anthropic()): Promise<WriteCluesResult> {
   const userMessage = buildUserMessage(grid, day);
 
-  const response = await client.messages.parse({
-    model: MODEL,
-    max_tokens: 16000,
-    thinking: { type: "adaptive" },
-    // Cache the (stable) style guide; the per-puzzle answers come after it.
-    // 1h TTL so the cached style guide survives across multi-tier runs and across
-// puzzles when batch-generating in a session (write costs ~2x input once; reads
-// stay at ~0.1x).
-system: [{ type: "text", text: STYLE_GUIDE, cache_control: { type: "ephemeral", ttl: "1h" } }],
-    output_config: {
-      effort: "high",
-      format: zodOutputFormat(ClueResponse),
+  const { output: parsed, usage } = await streamStructured(
+    client,
+    {
+      model: MODEL,
+      max_tokens: STRUCTURED_MAX_TOKENS,
+      thinking: { type: "adaptive" },
+      // Cache the (stable) style guide; the per-puzzle answers come after it.
+      // 1h TTL so the cached style guide survives across multi-tier runs and
+      // across puzzles when batch-generating in a session (write costs ~2x
+      // input once; reads stay at ~0.1x).
+      system: [{ type: "text", text: STYLE_GUIDE, cache_control: { type: "ephemeral", ttl: "1h" } }],
+      output_config: {
+        effort: "high",
+        format: zodOutputFormat(ClueResponse),
+      },
+      messages: [{ role: "user", content: userMessage }],
     },
-    messages: [{ role: "user", content: userMessage }],
-  });
-
-  const parsed = response.parsed_output;
-  if (!parsed) {
-    throw new Error(`Model did not return structured clues (stop_reason: ${response.stop_reason}).`);
-  }
+    ClueResponse,
+    "clue writer",
+  );
 
   // Map clues back to entries by num+dir.
   const clueByKey = new Map<string, string>();
@@ -114,17 +115,11 @@ system: [{ type: "text", text: STYLE_GUIDE, cache_control: { type: "ephemeral", 
         return { ...e, clue };
       });
 
-  const u = response.usage;
   return {
     across: attach("A"),
     down: attach("D"),
     warnings,
-    usage: {
-      input: u.input_tokens,
-      output: u.output_tokens,
-      cacheRead: u.cache_read_input_tokens ?? 0,
-      cacheWrite: u.cache_creation_input_tokens ?? 0,
-    },
+    usage,
   };
 }
 
@@ -152,7 +147,7 @@ export function buildReviseMessage(puzzle: CluedPuzzle, report: QAReport): strin
   lines.push(DAY_GUIDANCE[puzzle.day]);
   lines.push("");
   lines.push(
-    "An editor reviewed this finished puzzle. REWRITE ONLY the clues needed to resolve the findings below. Leave every other clue exactly as it is. A rewritten clue must still obey all cluing rules and the day's difficulty, and must not reintroduce a problem elsewhere (no duplicate words across clues).",
+    "An editor reviewed this finished puzzle. REWRITE ONLY the clues needed to resolve the findings below. Leave every other clue exactly as it is. A rewritten clue must still obey all cluing rules and the day's difficulty, and must not reintroduce a problem elsewhere (no duplicate words across clues, and no grid answer — or word sharing its root — may appear in any clue).",
   );
   lines.push(
     "Some findings cannot be fixed by re-cluing — they require changing the GRID itself (e.g. a weak/nonword answer, or a duplicate answer). For those, do NOT invent a clue; instead list them under `unresolved` with a short reason.",
@@ -194,25 +189,26 @@ export interface ReviseResult {
 }
 
 export async function reviseClues(puzzle: CluedPuzzle, report: QAReport, client = new Anthropic()): Promise<ReviseResult> {
-  const response = await client.messages.parse({
-    model: MODEL,
-    max_tokens: 16000,
-    thinking: { type: "adaptive" },
-    // Same cached system prompt as the clue writer → shares the prompt cache.
-    // 1h TTL so the cached style guide survives across multi-tier runs and across
-// puzzles when batch-generating in a session (write costs ~2x input once; reads
-// stay at ~0.1x).
-system: [{ type: "text", text: STYLE_GUIDE, cache_control: { type: "ephemeral", ttl: "1h" } }],
-    output_config: { effort: "high", format: zodOutputFormat(ReviseResponse) },
-    messages: [{ role: "user", content: buildReviseMessage(puzzle, report) }],
-  });
-  if (!response.parsed_output) {
-    throw new Error(`Reviser returned no structured output (stop_reason: ${response.stop_reason}).`);
-  }
+  const { output: parsed, usage } = await streamStructured(
+    client,
+    {
+      model: MODEL,
+      max_tokens: STRUCTURED_MAX_TOKENS,
+      thinking: { type: "adaptive" },
+      // Same cached system prompt as the clue writer → shares the prompt
+      // cache. 1h TTL so the cached style guide survives across multi-tier
+      // runs and across puzzles when batch-generating in a session.
+      system: [{ type: "text", text: STYLE_GUIDE, cache_control: { type: "ephemeral", ttl: "1h" } }],
+      output_config: { effort: "high", format: zodOutputFormat(ReviseResponse) },
+      messages: [{ role: "user", content: buildReviseMessage(puzzle, report) }],
+    },
+    ReviseResponse,
+    "clue reviser",
+  );
 
   const revByKey = new Map<string, string>();
   const changed: ReviseResult["changed"] = [];
-  for (const r of response.parsed_output.revisions) {
+  for (const r of parsed.revisions) {
     revByKey.set(`${r.num}${r.dir}`, r.clue.trim());
   }
 
@@ -224,18 +220,17 @@ system: [{ type: "text", text: STYLE_GUIDE, cache_control: { type: "ephemeral", 
       if (answerInClue(e.answer, next)) {
         warnings.push(`revised clue for ${e.num}${e.dir} still contains the answer: "${next}"`);
       }
-      const addresses = response.parsed_output!.revisions.find((r) => r.num === e.num && r.dir === e.dir)?.addresses ?? "";
+      const addresses = parsed.revisions.find((r) => r.num === e.num && r.dir === e.dir)?.addresses ?? "";
       changed.push({ num: e.num, dir, answer: e.answer, before: e.clue, after: next, addresses });
       return { ...e, clue: next };
     });
 
-  const u = response.usage;
   return {
     across: merge(puzzle.across, "A"),
     down: merge(puzzle.down, "D"),
     changed,
-    unresolved: response.parsed_output.unresolved,
+    unresolved: parsed.unresolved,
     warnings,
-    usage: { input: u.input_tokens, output: u.output_tokens, cacheRead: u.cache_read_input_tokens ?? 0 },
+    usage,
   };
 }

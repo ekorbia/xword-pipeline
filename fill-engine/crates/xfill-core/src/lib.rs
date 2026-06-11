@@ -6,6 +6,7 @@
 //! - [`solver`]: M1 DFS solver (MRV + score order)
 
 pub mod bitset;
+pub mod dup;
 pub mod gen;
 pub mod grid;
 pub mod library;

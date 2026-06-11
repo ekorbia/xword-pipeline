@@ -3,6 +3,7 @@ import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { z } from "zod";
 import type { ThemeIdeas } from "./types.js";
 import { MODELS } from "./models.js";
+import { streamStructured, STRUCTURED_MAX_TOKENS } from "./llm.js";
 
 const MODEL = MODELS.themeIdea;
 
@@ -60,22 +61,23 @@ export function buildIdeationMessage(opts: IdeationOpts): string {
 }
 
 export async function ideateThemes(opts: IdeationOpts, client = new Anthropic()): Promise<{ ideas: ThemeIdeas; usage: { input: number; output: number; cacheRead: number } }> {
-  const response = await client.messages.parse({
-    model: MODEL,
-    max_tokens: 16000,
-    thinking: { type: "adaptive" },
-    system: [{ type: "text", text: IDEATION_GUIDE, cache_control: { type: "ephemeral", ttl: "1h" } }],
-    output_config: { effort: "high", format: zodOutputFormat(ThemeIdeasSchema) },
-    messages: [{ role: "user", content: buildIdeationMessage(opts) }],
-  });
-  if (!response.parsed_output) {
-    throw new Error(`Ideation returned no structured output (stop_reason: ${response.stop_reason}).`);
-  }
-  const u = response.usage;
-  return {
-    ideas: response.parsed_output,
-    usage: { input: u.input_tokens, output: u.output_tokens, cacheRead: u.cache_read_input_tokens ?? 0 },
-  };
+  const { output: ideas, usage } = await streamStructured(
+    client,
+    {
+      model: MODEL,
+      max_tokens: STRUCTURED_MAX_TOKENS,
+      thinking: { type: "adaptive" },
+      system: [{ type: "text", text: IDEATION_GUIDE, cache_control: { type: "ephemeral", ttl: "1h" } }],
+      // Medium effort: brainstorming with a human filter at the end, and
+      // answer lengths are re-validated client-side — full deliberation isn't
+      // needed and mostly burns thinking tokens.
+      output_config: { effort: "medium", format: zodOutputFormat(ThemeIdeasSchema) },
+      messages: [{ role: "user", content: buildIdeationMessage(opts) }],
+    },
+    ThemeIdeasSchema,
+    "theme ideation",
+  );
+  return { ideas, usage };
 }
 
 // ---- client-side validation against the generator's constraints ----
