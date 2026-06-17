@@ -5,14 +5,14 @@
 
 An end-to-end pipeline for generating **dense, NYT-style crossword puzzles**:
 a Rust constraint-solver fill engine, multi-tier AI clue writing (Easy →
-Expert), optional per-answer explanations, and an adversarial AI editorial
-pass that gates publication.
+Expert), optional per-answer explanations, an adversarial AI editorial
+pass that gates publication, and export to the standard distribution formats.
 
 ```
-  theme-idea ─▶  fill-engine  ─▶  clue  ─▶  qa  ⇄  clue --revise
-  (optional)     (Rust: grid     (Claude:   (Claude:   (Claude: fix
-   theme sets     generation +    write      review)    flagged clues)
-                  scored fill)    clues)
+  theme-idea ─▶  fill-engine  ─▶  clue  ─▶  qa  ⇄  clue --revise ─▶  export
+  (optional)     (Rust: grid     (Claude:   (Claude:   (Claude: fix    (.puz /
+   theme sets     generation +    write      review)    flagged clues)  .ipuz /
+                  scored fill)    clues)                                 PDF)
 ```
 
 > **See it in action:** [**wordfuzz.com**](https://wordfuzz.com) serves
@@ -36,7 +36,7 @@ xword-pipeline/
 ├── clue-writer/         # TypeScript: Claude clue writing, QA, theme ideation
 └── out/                 # ALL generated JSON (gitignored)
     ├── libraries/       #   grid-library.json / theme-library.json   (fill-engine)
-    ├── puzzles/         #   *.clued.json, *.qa.json, *.revised.json   (clue/qa/revise)
+    ├── puzzles/         #   *.clued.json, *.qa.json, *.revised.json + *.puz/.ipuz/.pdf  (clue/qa/revise/export)
     └── themes/          #   theme-idea output
 ```
 

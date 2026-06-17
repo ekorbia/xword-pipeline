@@ -1,18 +1,20 @@
 # clue-writer
 
-The **Claude layer** of the crossword pipeline. Three tools, all built on the
-official `@anthropic-ai/sdk` (per-step models live in `src/models.ts`:
-Opus 4.7 for clue/QA, Opus 4.8 for theme ideation, Haiku 4.5 for the
-explainer), adaptive thinking,
-`effort: high`, prompt-cached system prompts, and structured (zod) output:
+The **Claude layer** of the crossword pipeline. The Claude-powered tools are all
+built on the official `@anthropic-ai/sdk` (per-step models live in
+`src/models.ts`: Opus 4.7 for clue/QA, Opus 4.8 for theme ideation, Haiku 4.5
+for the explainer), adaptive thinking, `effort: high`, prompt-cached system
+prompts, and structured (zod) output. A final `export` step is a pure-local
+converter (no API key) that turns a finished puzzle into distribution formats:
 
 | Command | Stage | What it does |
 |---|---|---|
 | `theme-idea` | front | Propose theme sets (answers + revealer) → feed the xfill `theme` generator |
 | `clue` | middle | Write one day-graded clue per answer for a filled grid |
 | `qa` | back | Editorially review a finished puzzle and flag issues |
+| `export` | distribute | Convert a finished puzzle to `.puz` / `.ipuz` / print-ready PDF |
 
-The pipeline: **`theme-idea` → (xfill `theme`/`library`) → `clue` → `qa` ⇄ `clue --revise`**.
+The pipeline: **`theme-idea` → (xfill `theme`/`library`) → `clue` → `qa` ⇄ `clue --revise` → `export`**.
 Each tool consumes/produces JSON so stages compose, and the `qa`/`revise` pair
 forms an iterate-until-clean editorial loop.
 
@@ -114,6 +116,46 @@ npm run explain -- examples/sample-clued.json --dry-run
 
 Output shape: `{ source, items: [{ num, dir, answer, explanation }, ...] }`.
 
+## `export` — distribution formats (.puz / .ipuz / PDF)
+
+Convert a finished `CluedPuzzle` into the formats the rest of the crossword
+world reads. **Local only — no API key.** This is the bridge to the broader
+ecosystem (AcrossLite and most solver apps import `.puz`; ipuz is the modern
+open standard) and to print/KDP (the PDF is print-ready).
+
+```bash
+npm run export -- ../out/puzzles/puzzle-2026-06-06.clued.medium.json
+npm run export -- ../out/puzzles/puzzle-2026-06-06.clued.medium.json --format pdf --title "Steam Power"
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `<clued.json>` | (required) | A clued-puzzle JSON (output of `clue`/`revise`) |
+| `--format F` | `all` | `puz`, `ipuz`, `pdf`, or `all` |
+| `--out PATH` | input path with the format's extension | Output path; for `all`, used as a base name |
+| `--title T` | `WordFuzz Crossword` | Puzzle title stamped into every format |
+| `--author A` | `WordFuzz` | Author/byline |
+| `--copyright C` | `© WordFuzz` | Copyright notice |
+| `--notes N` | `Difficulty: <difficulty>` (+ theme) | Free-form note (.puz notes / ipuz `intro` / PDF subtitle) |
+| `--no-solution` | off | Omit the solution page from the PDF |
+
+What each format contains:
+
+- **`.puz`** — AcrossLite binary (v1.3). Solution grid, empty player grid, and
+  clues in canonical order (by number, across before down), with the CIB,
+  global, and masked checksums computed exactly so files validate in any reader.
+  Text is folded to Latin-1 (smart quotes/dashes → ASCII).
+- **`.ipuz`** — the open JSON standard (`http://ipuz.org/crossword#1`): numbered
+  `puzzle` grid, `solution` grid, and `Across`/`Down` clue lists. UTF-8, so clue
+  text is preserved verbatim.
+- **PDF** — print-ready US-Letter: titled page with the empty grid, the clues in
+  a paginated 3-column flow, and a final solution page. Hand-rolled (no PDF
+  dependency); clue wrapping is measured against real Helvetica metrics.
+
+> Multi-tier puzzles: `.puz` and `.ipuz` carry one clue per entry, so export the
+> tier you want to distribute (e.g. the `.clued.medium.json`). Each tier is its
+> own file.
+
 ## `theme-idea` — brainstorm themes
 
 Proposes theme sets honoring the generator's grid constraints (1–4 answers, each
@@ -144,6 +186,12 @@ npm run theme-idea -- --dry-run
   to entries by number + direction. Includes a light fairness check that warns
   if a clue contains its own answer.
 - `cli.ts` — file I/O and the `--dry-run` path.
+- `exportShared.ts` + `puz.ts` / `ipuz.ts` / `pdf.ts` — the local `export`
+  converters (no API). `exportShared.ts` holds the geometry every format needs
+  (dimensions, per-cell numbering, ordered clues, text folding); each format
+  module is a pure `CluedPuzzle → bytes/string` function, driven by
+  `exportCli.ts`. Validated end-to-end in `export.test.ts` (the `.puz`
+  checksums are re-derived from the emitted bytes).
 
 ## Notes
 

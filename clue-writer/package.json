@@ -9,8 +9,9 @@
     "qa": "tsx src/qaCli.ts",
     "explain": "tsx src/explainCli.ts",
     "theme-idea": "tsx src/themeCli.ts",
+    "export": "tsx src/exportCli.ts",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test src/dupCheck.test.ts"
+    "test": "tsx --test src/*.test.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.100.0",
