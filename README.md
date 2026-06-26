@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/ekorbia/xword-pipeline/actions/workflows/ci.yml/badge.svg)](https://github.com/ekorbia/xword-pipeline/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+[![Launch Certified by FuzzPage](https://fuzzpage.com/badge/ekorbia-xword-pipeline.svg)](https://fuzzpage.com/p/ekorbia-xword-pipeline)
 
 An end-to-end pipeline for generating **dense, NYT-style crossword puzzles**:
 a Rust constraint-solver fill engine, multi-tier AI clue writing (Easy →
