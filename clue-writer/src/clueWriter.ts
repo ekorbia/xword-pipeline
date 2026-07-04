@@ -2,7 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { z } from "zod";
 import type { CluedEntry, CluedPuzzle, Day, LibraryGrid, QAReport } from "./types.js";
-import { DAY_GUIDANCE, STYLE_GUIDE } from "./styleGuide.js";
+import { DAY_GUIDANCE, STYLE_GUIDE, sizeLine } from "./styleGuide.js";
 import { MODELS } from "./models.js";
 import { streamStructured, STRUCTURED_MAX_TOKENS } from "./llm.js";
 
@@ -27,6 +27,7 @@ export function buildUserMessage(grid: LibraryGrid, day: Day): string {
   const lines: string[] = [];
   lines.push(`Target day: ${day}`);
   lines.push(DAY_GUIDANCE[day]);
+  lines.push(sizeLine(grid.fill.length, grid.fill[0]?.length ?? grid.fill.length));
   lines.push("");
 
   const themeEntries = grid.entries.filter((e) => e.theme);
@@ -145,6 +146,7 @@ export function buildReviseMessage(puzzle: CluedPuzzle, report: QAReport): strin
   const lines: string[] = [];
   lines.push(`Target day: ${puzzle.day}`);
   lines.push(DAY_GUIDANCE[puzzle.day]);
+  lines.push(sizeLine(puzzle.fill.length, puzzle.fill[0]?.length ?? puzzle.fill.length));
   lines.push("");
   lines.push(
     "An editor reviewed this finished puzzle. REWRITE ONLY the clues needed to resolve the findings below. Leave every other clue exactly as it is. A rewritten clue must still obey all cluing rules and the day's difficulty, and must not reintroduce a problem elsewhere (no duplicate words across clues, and no grid answer — or word sharing its root — may appear in any clue).",

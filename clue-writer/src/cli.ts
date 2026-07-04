@@ -109,7 +109,8 @@ async function runWrite(input: string, gridIdx: number, dayArg: Day | undefined,
   const lib = JSON.parse(readFileSync(input, "utf8")) as LibraryFile;
   const grid = lib.grids[gridIdx];
   if (!grid) throw new Error(`grid ${gridIdx} not found (library has ${lib.grids.length} grids)`);
-  const day = dayArg ?? defaultDay(grid.themed);
+  // Size-aware default: a bare 5×5 mini clues at Monday, not Saturday.
+  const day = dayArg ?? defaultDay(grid.themed, grid.fill.length);
 
   console.error(
     `library: ${input} | grid ${grid.id} (${grid.themed ? "themed" : "themeless"}, ${grid.entries.length} entries, mean ${grid.mean_score.toFixed(1)}) | day: ${dayLabel(day)}`,

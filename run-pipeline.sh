@@ -43,7 +43,7 @@ KEEP_MEAN=""       # quality floor; resolved by mode after arg parsing (78 theme
 MAX_IFFY=""        # iffy cap; resolved by mode after arg parsing (0 themeless / 12 themed)
 TOP=20
 GRID=0
-DAY=""             # empty → clue writer picks (Saturday themeless / Wednesday themed)
+DAY=""             # empty → clue writer picks by size/mode (mini≤7→Monday, midi 8-12→Wednesday, full themeless→Saturday, themed→Wednesday)
 THEMES=""          # comma-separated, required for --mode themed
 TIERS=""           # comma-separated subset of {easy,medium,hard}; empty = single-tier (today)
 EXPLAIN=0          # 1 → also run the post-solve explainer
@@ -71,7 +71,9 @@ Usage: run-pipeline.sh [options]
   --max-iffy N              Keep grids with <= N entries scoring below 50 (default: 0 themeless / 12 themed)
   --top N                   Keep the best N grids in the library (default: 20)
   --grid N                  Which library grid to clue (default: 0 = best)
-  --day DAY                 Monday..Saturday, or Easy/Medium/Tricky/Hard/Expert (default: mode-based)
+  --day DAY                 Monday..Saturday, or Easy/Medium/Tricky/Hard/Expert (default: size/mode-
+                            aware — Monday for minis ≤7, Wednesday for midis 8-12 and themed,
+                            Saturday for full-size themeless)
   --tiers easy,medium,hard[,expert]
                             Multi-tier: write a clue set per tier on the SAME grid (overrides --day).
                             Each tier is day-calibrated (easy=Monday, medium=Wednesday,
@@ -155,13 +157,18 @@ interactive_prompt() {
   echo ""
 
   if [[ "$_tier_mode" == "single" ]]; then
-    # Q3a: single-tier day
+    # Q3a: single-tier day. Default tracks the size class chosen in Q1 — a
+    # mini should suggest Monday, not Saturday (difficulty on small grids is
+    # clue wording only; see clue-writer/src/styleGuide.ts).
+    local _day_default="Saturday"
+    if [[ "$SIZE" -le 7 ]]; then _day_default="Monday"
+    elif [[ "$SIZE" -le 12 ]]; then _day_default="Wednesday"; fi
     while true; do
       echo "  Day / difficulty?"
       echo "    Monday=Easy, Tuesday=Easy, Wednesday=Medium, Thursday=Tricky,"
       echo "    Friday=Hard, Saturday=Expert"
-      read -rp "  Day or word [Saturday]: " _ans
-      _ans="${_ans:-Saturday}"
+      read -rp "  Day or word [${_day_default}]: " _ans
+      _ans="${_ans:-$_day_default}"
       _l="$(echo "$_ans" | tr '[:upper:]' '[:lower:]')"
       case "$_l" in
         monday|tuesday|wednesday|thursday|friday|saturday|easy|medium|tricky|hard|expert)
@@ -349,6 +356,15 @@ if [[ -n "$TIERS" ]]; then
       *) echo "error: --tiers values must be easy, medium, hard, or expert (got '$tier')" >&2; exit 2 ;;
     esac
   done
+fi
+
+# A mini at late-week difficulty is usually a mistake (on small grids the day
+# affects clue wording only; minis normally ship Easy-Medium). Warn, don't block.
+if [[ -n "$DAY" && "$SIZE" -le 7 ]]; then
+  case "$(printf '%s' "$DAY" | tr '[:upper:]' '[:lower:]')" in
+    friday|saturday|hard|expert)
+      echo "note: ${SIZE}x${SIZE} mini with --day '$DAY' — the day calibrates clue WORDING only; minis usually ship Easy-Medium. Proceeding." >&2 ;;
+  esac
 fi
 
 mkdir -p "$OUT/libraries" "$OUT/puzzles" "$OUT/themes"

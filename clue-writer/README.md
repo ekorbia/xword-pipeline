@@ -42,7 +42,7 @@ npm run clue -- ../out/libraries/theme-library.json --grid 0     # themed → We
 |------|---------|-------------|
 | `<library.json>` | (required) | A fill-engine grid-library file (in `../out/libraries/`) |
 | `--grid N` | `0` | Which grid in the library to clue |
-| `--day D` | Saturday (themeless) / Wednesday (themed) | Difficulty. A day (Monday…Saturday) **or** a friendly word: `Easy`=Mon, `Medium`=Wed, `Tricky`=Thu, `Hard`=Fri, `Expert`=Sat |
+| `--day D` | size/mode-aware: Monday (themeless ≤7), Wednesday (themeless 8–12 or themed), Saturday (themeless 13+) | Difficulty. A day (Monday…Saturday) **or** a friendly word: `Easy`=Mon, `Medium`=Wed, `Tricky`=Thu, `Hard`=Fri, `Expert`=Sat |
 | `--out PATH` | `../out/puzzles/<input>.clued.<day>.json` | Output clued-puzzle JSON |
 | `--dry-run` | off | Print the assembled prompt and exit |
 
@@ -54,6 +54,11 @@ Writes a `CluedPuzzle` JSON (template, fill, and `across`/`down` arrays where ea
 > generic "Hard"/"Expert" wouldn't convey as well. So day-of-week stays as the
 > internal difficulty model; the friendly word is for humans (and the play app's
 > difficulty badge). The mapping: Easy=Mon/Tue, Medium=Wed, Tricky=Thu, Hard=Fri, Expert=Sat.
+>
+> **Size is a separate axis.** Every prompt also states the grid's size class
+> (mini ≤7 / midi 8–12 / full 13+), and both system prompts carry a size-class
+> rubric: on a mini, the day calibrates clue *wording* only — a "Wednesday 5×5"
+> is a Wednesday-worded mini, not a mid-week 15×15.
 
 ### Revise — fix clues flagged by QA
 
@@ -82,7 +87,10 @@ findings, then suggests re-running `qa`. This closes the loop into a proper
 
 Reviews a finished `CluedPuzzle` and reports severity-ranked findings (weak fill,
 duplicates, clue-accuracy errors, unfair crossings, difficulty miscalibration,
-breakfast-test, theme consistency, style) plus a verdict.
+breakfast-test, theme consistency, style) plus a verdict. The reviewer receives
+the same per-day rubric the clue writer wrote to plus the grid's size class, so
+difficulty findings are judged per size — a 5×5 clued for Wednesday is graded as
+a Wednesday-worded mini, not against mid-week 15×15 expectations.
 
 ```bash
 npm run qa -- ../out/puzzles/grid-library.clued.saturday.json

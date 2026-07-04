@@ -102,7 +102,7 @@ prints the three artifact paths and the verdict.
 | `--size N` | `15` | **Themeless only.** Grid dimension — e.g. `5` or `10` for minis. Themed grids are 15×15 for now |
 | `--themes A,B,C` | — | Theme answers (A–Z, no spaces). 1–4 answers; each 3–15 letters but **never exactly 12** (a 12-letter answer can't be placed as a single across in a 15-wide grid). **7–11 letters fill best** — a 13–15 letter answer and its full-width mirror slot cross most of the grid, so use at most one per set |
 | `--blocks N` | ~16% of area ± ~10% / 44 ± ~10% | Black squares. Default is ~16% of the grid area with a seeded ±10% jitter (15→32-40, 10→14-18, 5→3-5); themed grids default to 44 with the same jitter shape and a 42-block floor. Pass an explicit N to disable jitter. Reproducible via `--seed` |
-| `--day DAY` | Saturday / Wednesday | Clue difficulty. Accepts a day (Monday…Saturday) **or** a friendly word: `Easy`=Mon, `Medium`=Wed, `Tricky`=Thu, `Hard`=Fri, `Expert`=Sat |
+| `--day DAY` | size/mode-aware: Monday (mini ≤7), Wednesday (midi 8–12 or themed), Saturday (full themeless) | Clue difficulty. Accepts a day (Monday…Saturday) **or** a friendly word: `Easy`=Mon, `Medium`=Wed, `Tricky`=Thu, `Hard`=Fri, `Expert`=Sat. The day calibrates clue *wording*; grid size is stated to the writer and QA separately, so a late-week mini is judged as a mini |
 | `--grid N` | `0` | Which library grid to clue (`0` = highest quality) |
 | `--keep-mean F` | `78` / `68` themed | **Quality floor.** Keep only grids whose mean answer-score ≥ F. Themed fills are far more constrained, so themed mode auto-relaxes to 68 unless you override |
 | `--max-iffy N` | `0` / `12` themed | **The key fill-quality lever** — see below. Themed mode auto-relaxes to 12 |

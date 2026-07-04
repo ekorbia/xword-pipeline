@@ -21,6 +21,11 @@
 - **Supplemental wordlist** support to broaden the fill engine's vocabulary.
 
 ### Changed
+- **Size-aware difficulty defaults.** A bare themeless mini (≤7) now clues at
+  Monday and a midi (8–12) at Wednesday; full-size themeless keeps the Saturday
+  default (themed unchanged at Wednesday). The interactive wizard's suggested
+  day follows the chosen size, and `run-pipeline.sh` prints a note when a ≤7
+  mini is paired with a late-week `--day`.
 - **Post-solve explanations default to Haiku 4.5** to cut cost — they're short and
   don't need a frontier model (override with `--explain-model`).
 - **Themed generation is far more reliable.** Theme placement is now randomized
@@ -33,6 +38,12 @@
   files stay client-side.
 
 ### Fixed
+- **QA judged minis against full-size day expectations.** The editorial reviewer
+  now receives the same per-day rubric the clue writer wrote to plus a
+  size-class rubric (mini ≤7 / midi 8–12 / full 13+), and every prompt (clue,
+  QA, revise) states the grid's size — so a "Wednesday 5×5" is graded as a
+  Wednesday-worded mini instead of a mid-week 15×15. Friday/Saturday guidance
+  no longer asserts themeless-ness when the puzzle is themed.
 - **Themed-generation deadlock.** Short or dense theme sets used to produce *zero*
   valid templates: a 2-cell vertical run trapped above a theme's bounding blocks
   could never be rescued one cell at a time. A seed-repair pass now blocks out

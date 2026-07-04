@@ -2,6 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { z } from "zod";
 import type { CluedPuzzle, QAReport } from "./types.js";
+import { DAY_RUBRIC, SIZE_GUIDANCE, sizeLine } from "./styleGuide.js";
 import { MODELS } from "./models.js";
 import { streamStructured, STRUCTURED_MAX_TOKENS } from "./llm.js";
 
@@ -11,14 +12,22 @@ export const EDITOR_GUIDE = `You are the test-solving editor for a New York Time
 
 # What to check
 
-1. FILL QUALITY. Flag genuinely weak entries: obscure crosswordese, awkward partials, made-up-looking strings, random Roman numerals/abbreviations, or anything that isn't a real, recognizable word/name/phrase. Short glue (3-4 letters) gets some latitude; long entries get little.
+1. FILL QUALITY. Flag genuinely weak entries: obscure crosswordese, awkward partials, made-up-looking strings, random Roman numerals/abbreviations, or anything that isn't a real, recognizable word/name/phrase. Short glue (3-4 letters) gets some latitude; long entries get little. Judge against the puzzle's size class (see below): in a MINI every entry is short — grade the short fill on cleanliness and liveliness, not on being short.
 2. DUPLICATES. The same word may not appear twice as an answer, and an answer word (or a clear root of it) must not appear in ANY clue anywhere in the puzzle. Flag shared roots across the whole grid (e.g. an answer SAND and a clue containing "sandy").
 3. CLUE ACCURACY. Each clue must correctly and fairly indicate its answer: right definition, right facts, right part of speech, agreement in tense/number, correct abbreviation/foreign signals. Flag factual errors, POS/tense mismatches, missing "Abbr."/"for short" on shortened answers, and clues that are simply wrong.
 4. FAIRNESS / CROSSINGS. Flag unfair crossings: two obscure entries crossing at a hard-to-guess letter (a "Natick"), especially proper-noun × proper-noun.
-5. DIFFICULTY CALIBRATION. Clues must match the stated day. Flag clues that are too hard for an early-week puzzle (gratuitous trivia/misdirection) or too easy/hand-holding for a late-week one. Note unmarked puns (missing "?") and overused "?" clues.
+5. DIFFICULTY CALIBRATION. Clues must match the stated day per the day rubric below, interpreted within the puzzle's size class. Flag clues that are too hard for an early-week puzzle (gratuitous trivia/misdirection) or too easy/hand-holding for a late-week one. Note unmarked puns (missing "?") and overused "?" clues. Do not flag a small puzzle for lacking full-size structural difficulty — on a mini, the day lives in clue wording alone.
 6. BREAKFAST TEST. Flag answers or clues that are grim, gross, slurs, or otherwise unfit for a general morning audience.
 7. THEME. For themed puzzles, verify the theme answers are consistent and their clues honor the theme; flag a theme answer that breaks the pattern or a revealer reference that points to the wrong number.
 8. STYLE. Flag repeated clue gimmicks/wording, terminal periods on non-abbreviation clues, answer wrapped in stray quotes, and other house-style slips.
+
+# Day rubric (the standard the clues were written to)
+
+${DAY_RUBRIC}
+
+# Grid size classes
+
+${SIZE_GUIDANCE}
 
 # Severity
 - high: must fix before publishing (wrong clue, duplicate, unfair Natick, offensive content, non-word fill in a long slot).
@@ -48,6 +57,7 @@ const QAReportSchema = z.object({
 export function buildReviewMessage(p: CluedPuzzle): string {
   const lines: string[] = [];
   lines.push(`Puzzle type: ${p.themed ? "THEMED" : "themeless"}   Target day: ${p.day}`);
+  lines.push(sizeLine(p.fill.length, p.fill[0]?.length ?? p.fill.length));
   if (p.themed && p.themes.length) {
     lines.push(`Stated theme answers: ${p.themes.join(", ")}`);
   }
