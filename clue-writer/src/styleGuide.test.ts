@@ -4,8 +4,12 @@ import assert from "node:assert/strict";
 import {
   DAY_RUBRIC,
   SIZE_GUIDANCE,
+  TIER_TO_DAY,
+  TIERS,
   defaultDay,
+  difficultyWord,
   normalizeDay,
+  normalizeTier,
   sizeClassOf,
   sizeLine,
 } from "./styleGuide.js";
@@ -38,6 +42,28 @@ test("normalizeDay accepts day names and friendly words", () => {
   assert.equal(normalizeDay("Wednesday"), "Wednesday");
   assert.equal(normalizeDay("expert"), "Saturday");
   assert.equal(normalizeDay("bogus"), undefined);
+});
+
+test("TIER_TO_DAY + normalizeTier: four canonical tiers; Tricky is NOT one", () => {
+  assert.deepEqual(TIER_TO_DAY, {
+    easy: "Monday",
+    medium: "Wednesday",
+    hard: "Friday",
+    expert: "Saturday",
+  });
+  assert.deepEqual([...TIERS], ["easy", "medium", "hard", "expert"]);
+  assert.equal(normalizeTier("Expert"), "expert");
+  assert.equal(normalizeTier("medium"), "medium");
+  assert.equal(normalizeTier("tricky"), undefined); // Thursday is a day/word, not a tier
+  assert.equal(normalizeTier("bogus"), undefined);
+});
+
+test("filename token = tier name for the four tiers (single/multi-tier filenames unify)", () => {
+  // A single-tier write names its file `…clued.<difficultyWord>.json`; for the
+  // four canonical tiers that token must equal the tier name multi-tier uses.
+  for (const t of TIERS) {
+    assert.equal(difficultyWord(TIER_TO_DAY[t]).toLowerCase(), t);
+  }
 });
 
 test("DAY_RUBRIC covers all six days; SIZE_GUIDANCE covers all three classes", () => {

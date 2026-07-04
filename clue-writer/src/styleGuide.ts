@@ -127,6 +127,29 @@ const WORD_TO_DAY: Record<string, Day> = {
   expert: "Saturday",
 };
 
+// ---- Product tiers ----
+// The player exposes exactly FOUR selectable clue tiers; they are the canonical
+// PRODUCT difficulty vocabulary. The Mon–Sat `day` stays the INTERNAL
+// clue-calibration signal. THIS map is the single source of truth for tier→day —
+// run-pipeline.sh's `--tiers` help and the README tables mirror it; if a mapping
+// changes, change it HERE first. Thursday/"Tricky" is intentionally NOT a tier:
+// it's a valid single-puzzle difficulty word but has no multi-tier slot in the
+// player, so it must never be offered as one.
+export type Tier = "easy" | "medium" | "hard" | "expert";
+export const TIERS: readonly Tier[] = ["easy", "medium", "hard", "expert"];
+export const TIER_TO_DAY: Record<Tier, Day> = {
+  easy: "Monday",
+  medium: "Wednesday",
+  hard: "Friday",
+  expert: "Saturday",
+};
+
+/** Normalize a tier token (case-insensitive); undefined if not one of the four. */
+export function normalizeTier(input: string): Tier | undefined {
+  const key = input.trim().toLowerCase();
+  return (TIERS as readonly string[]).includes(key) ? (key as Tier) : undefined;
+}
+
 const DAY_NAMES: Day[] = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
 // The full per-day rubric as one block — embedded in the QA editor's system

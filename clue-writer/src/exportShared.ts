@@ -4,6 +4,7 @@
 // map, ordered clue lists, and sanitized text.
 
 import type { CluedEntry, CluedPuzzle } from "./types.js";
+import { difficultyWord } from "./styleGuide.js";
 
 /** Publication metadata stamped into every export. */
 export interface ExportMeta {
@@ -16,7 +17,9 @@ export interface ExportMeta {
 
 /** Fill in sensible defaults for any metadata the caller didn't supply. */
 export function resolveMeta(puzzle: CluedPuzzle, partial: Partial<ExportMeta>): ExportMeta {
-  const diff = puzzle.difficulty ?? puzzle.day;
+  // Prefer the friendly word; fall back to mapping the internal day so an
+  // exported note never reads "Difficulty: Saturday".
+  const diff = puzzle.difficulty ?? difficultyWord(puzzle.day);
   const themeNote = puzzle.themed && puzzle.themes.length ? ` · Theme: ${puzzle.themes.join(", ")}` : "";
   return {
     title: partial.title ?? "WordFuzz Crossword",

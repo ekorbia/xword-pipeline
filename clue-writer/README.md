@@ -42,9 +42,12 @@ npm run clue -- ../out/libraries/theme-library.json --grid 0     # themed → We
 |------|---------|-------------|
 | `<library.json>` | (required) | A fill-engine grid-library file (in `../out/libraries/`) |
 | `--grid N` | `0` | Which grid in the library to clue |
-| `--day D` | size/mode-aware: Monday (themeless ≤7), Wednesday (themeless 8–12 or themed), Saturday (themeless 13+) | Difficulty. A day (Monday…Saturday) **or** a friendly word: `Easy`=Mon, `Medium`=Wed, `Tricky`=Thu, `Hard`=Fri, `Expert`=Sat |
-| `--out PATH` | `../out/puzzles/<input>.clued.<day>.json` | Output clued-puzzle JSON |
+| `--tier T` | — | Product difficulty tier: `easy`/`medium`/`hard`/`expert` (→ Mon/Wed/Fri/Sat). The canonical player vocabulary; the recommended way to set difficulty |
+| `--day D` | size/mode-aware: Monday (themeless ≤7), Wednesday (themeless 8–12 or themed), Saturday (themeless 13+) | Finer control than `--tier`: a day (Monday…Saturday) **or** a friendly word `Easy`/`Medium`/`Tricky`/`Hard`/`Expert`. Adds Tuesday and Thursday (`Tricky`), which are **not** tiers |
+| `--out PATH` | `../out/puzzles/<input>.clued.<tier>.json` | Output clued-puzzle JSON (filename token is the friendly word: `…clued.expert.json`) |
 | `--dry-run` | off | Print the assembled prompt and exit |
+
+`--tier` and `--day` set the same internal calibration; `--tier` just restricts to the four canonical tiers. If both are given, the last one wins.
 
 Writes a `CluedPuzzle` JSON (template, fill, and `across`/`down` arrays where each entry gains a `clue`). It records both `day` (the NYT-style calibration day, e.g. `"Saturday"`) and a friendly `difficulty` word (e.g. `"Expert"`).
 
@@ -54,6 +57,12 @@ Writes a `CluedPuzzle` JSON (template, fill, and `across`/`down` arrays where ea
 > generic "Hard"/"Expert" wouldn't convey as well. So day-of-week stays as the
 > internal difficulty model; the friendly word is for humans (and the play app's
 > difficulty badge). The mapping: Easy=Mon/Tue, Medium=Wed, Tricky=Thu, Hard=Fri, Expert=Sat.
+>
+> **The player's product vocabulary is four tiers** (easy/medium/hard/expert →
+> Mon/Wed/Fri/Sat). That tier→day map lives in one place — `TIER_TO_DAY` in
+> `src/styleGuide.ts`; `run-pipeline.sh` and these tables mirror it. Thursday
+> ("Tricky") is a valid single-puzzle difficulty but not a tier, so it never
+> appears in the player's tier picker or a multi-tier bundle.
 >
 > **Size is a separate axis.** Every prompt also states the grid's size class
 > (mini ≤7 / midi 8–12 / full 13+), and both system prompts carry a size-class

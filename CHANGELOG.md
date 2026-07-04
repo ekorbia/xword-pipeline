@@ -3,6 +3,11 @@
 ## [0.1.0]
 
 ### Added
+- **`--tier easy|medium|hard|expert`** on the clue writer — the canonical
+  player-facing difficulty vocabulary, alongside the finer-grained `--day`
+  (which additionally reaches Tuesday and Thursday/"Tricky"). The single
+  tier→day mapping now lives in one place (`TIER_TO_DAY` in `styleGuide.ts`);
+  `run-pipeline.sh` and the docs mirror it.
 - **Expert clue tier** — clue writing now spans the full Easy → Expert range.
 - **Duplicate-answer detection at two layers.** The Rust fill gate rejects any
   grid whose answers share a root — equal stems (`TEN`/`TENTH`, `EVEN`/`UNEVENLY`),
@@ -26,6 +31,9 @@
   default (themed unchanged at Wednesday). The interactive wizard's suggested
   day follows the chosen size, and `run-pipeline.sh` prints a note when a ≤7
   mini is paired with a late-week `--day`.
+- **Single-tier output filenames use the friendly-word token** (`…clued.expert.json`
+  instead of `…clued.saturday.json`), matching multi-tier `…clued.<tier>.json`
+  so both modes share one vocabulary. Explicit `--out` is unaffected.
 - **Post-solve explanations default to Haiku 4.5** to cut cost — they're short and
   don't need a frontier model (override with `--explain-model`).
 - **Themed generation is far more reliable.** Theme placement is now randomized
@@ -38,6 +46,10 @@
   files stay client-side.
 
 ### Fixed
+- **Day names no longer leak as difficulty labels.** Export notes derive the
+  friendly word from the day when a puzzle carries no explicit `difficulty`, so
+  a `.puz`/`.ipuz` note never reads "Difficulty: Saturday". (The player has the
+  matching fix: a badge shows "Medium", never "Wednesday".)
 - **QA judged minis against full-size day expectations.** The editorial reviewer
   now receives the same per-day rubric the clue writer wrote to plus a
   size-class rubric (mini ≤7 / midi 8–12 / full 13+), and every prompt (clue,

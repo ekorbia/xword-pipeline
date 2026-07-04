@@ -1,7 +1,12 @@
 // CLI: write or revise crossword clues with Claude.
 //
-//   Write:   npm run clue -- <library.json> [--grid N] [--day D] [--out clued.json] [--dry-run]
+//   Write:   npm run clue -- <library.json> [--grid N] [--tier T | --day D] [--out clued.json] [--dry-run]
 //   Revise:  npm run clue -- <clued.json> --revise <qa.json> [--out clued.v2.json] [--dry-run]
+//
+// Difficulty may be given as a product TIER (--tier easy|medium|hard|expert) or,
+// for finer control, an NYT day / friendly word (--day Monday..Saturday or
+// Easy/Medium/Tricky/Hard/Expert). --tier is the canonical product vocabulary;
+// --day additionally reaches Tuesday and Thursday ("Tricky"), which are not tiers.
 //
 // Requires ANTHROPIC_API_KEY (except with --dry-run).
 
@@ -10,7 +15,7 @@ import { basename, dirname } from "node:path";
 import type { CluedPuzzle, Day, LibraryFile, QAReport } from "./types.js";
 import { buildReviseMessage, buildUserMessage, reviseClues, writeClues } from "./clueWriter.js";
 import { findAnswerInClueDups } from "./dupCheck.js";
-import { defaultDay, difficultyWord, dayLabel, normalizeDay } from "./styleGuide.js";
+import { TIER_TO_DAY, defaultDay, difficultyWord, dayLabel, normalizeDay, normalizeTier } from "./styleGuide.js";
 
 const PUZZLES_DIR = "../out/puzzles";
 
@@ -31,7 +36,12 @@ function parseArgs(argv: string[]) {
   for (let i = 0; i < rest.length; i++) {
     const a = rest[i]!;
     if (a === "--grid") args.grid = Number(rest[++i]);
-    else if (a === "--day") {
+    else if (a === "--tier") {
+      const t = rest[++i]!;
+      const tier = normalizeTier(t);
+      if (!tier) throw new Error(`bad --tier '${t}' (use easy, medium, hard, or expert)`);
+      args.day = TIER_TO_DAY[tier];
+    } else if (a === "--day") {
       const d = rest[++i]!;
       const match = normalizeDay(d);
       if (!match) {
@@ -48,7 +58,7 @@ function parseArgs(argv: string[]) {
   }
   if (!args.input) {
     throw new Error(
-      "usage:\n  clue <library.json> [--grid N] [--day D] [--out clued.json] [--dry-run]\n  clue <clued.json> --revise <qa.json> [--out clued.v2.json] [--dry-run]",
+      "usage:\n  clue <library.json> [--grid N] [--tier easy|medium|hard|expert | --day D] [--out clued.json] [--dry-run]\n  clue <clued.json> --revise <qa.json> [--out clued.v2.json] [--dry-run]",
     );
   }
   return args;
@@ -178,7 +188,10 @@ async function runWrite(input: string, gridIdx: number, dayArg: Day | undefined,
   console.error("\nDOWN");
   for (const e of puzzle.down) console.error(`  ${e.num}. ${e.clue}   (${e.answer})`);
 
-  const outPath = outPathFor(out, input, `.clued.${day.toLowerCase()}.json`);
+  // Filename uses the friendly-word token (…clued.expert.json), matching the
+  // multi-tier `…clued.<tier>.json` naming so single- and multi-tier outputs
+  // share one vocabulary. (Thursday → "tricky", which is never a multi-tier slot.)
+  const outPath = outPathFor(out, input, `.clued.${difficultyWord(day).toLowerCase()}.json`);
   writeJson(outPath, puzzle);
   console.error(`\nwrote clued puzzle -> ${outPath}`);
 }
