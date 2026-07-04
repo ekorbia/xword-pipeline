@@ -1,28 +1,38 @@
 // CLI: review a clued-puzzle JSON (output of the clue writer) and emit a QA report.
 //
 // Usage:
-//   npm run qa -- <clued.json> [--out report.json] [--dry-run]
+//   npm run qa -- <clued.json> [--scope grid|clue|full] [--out report.json] [--dry-run]
 //
-// Requires ANTHROPIC_API_KEY (except with --dry-run).
+// --scope splits multi-tier review: `grid` checks fill/duplicates/Naticks/theme
+// answers once per grid; `clue` checks accuracy/difficulty/style per tier; `full`
+// (default) does both. Requires ANTHROPIC_API_KEY (except with --dry-run).
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname } from "node:path";
 import type { CluedPuzzle } from "./types.js";
-import { buildReviewMessage, reviewPuzzle } from "./editor.js";
+import { buildReviewMessage, reviewPuzzle, type QAScope } from "./editor.js";
 
 const PUZZLES_DIR = "../out/puzzles";
 
 function parseArgs(argv: string[]) {
-  const args = { input: "", out: "", dryRun: false };
+  const args = { input: "", out: "", dryRun: false, scope: "full" as QAScope };
   const rest = argv.slice(2);
   for (let i = 0; i < rest.length; i++) {
     const a = rest[i]!;
     if (a === "--out") args.out = rest[++i]!;
-    else if (a === "--dry-run") args.dryRun = true;
+    else if (a === "--scope") {
+      const s = rest[++i]!;
+      if (s !== "grid" && s !== "clue" && s !== "full") {
+        throw new Error(`bad --scope '${s}' (use grid, clue, or full)`);
+      }
+      args.scope = s;
+    } else if (a === "--dry-run") args.dryRun = true;
     else if (!args.input) args.input = a;
     else throw new Error(`unexpected argument: ${a}`);
   }
-  if (!args.input) throw new Error("usage: qa <clued.json> [--out report.json] [--dry-run]");
+  if (!args.input) {
+    throw new Error("usage: qa <clued.json> [--scope grid|clue|full] [--out report.json] [--dry-run]");
+  }
   return args;
 }
 
@@ -32,12 +42,12 @@ async function main() {
   const args = parseArgs(process.argv);
   const puzzle = JSON.parse(readFileSync(args.input, "utf8")) as CluedPuzzle;
   console.error(
-    `reviewing: ${args.input} | ${puzzle.themed ? "themed" : "themeless"} ${puzzle.day} | ${puzzle.across.length + puzzle.down.length} entries`,
+    `reviewing: ${args.input} | ${puzzle.themed ? "themed" : "themeless"} ${puzzle.day} | scope: ${args.scope} | ${puzzle.across.length + puzzle.down.length} entries`,
   );
 
   if (args.dryRun) {
     console.error("--- DRY RUN: review prompt (no API call) ---\n");
-    console.log(buildReviewMessage(puzzle));
+    console.log(buildReviewMessage(puzzle, args.scope));
     return;
   }
   if (!process.env.ANTHROPIC_API_KEY) {
@@ -46,7 +56,7 @@ async function main() {
   }
 
   const t0 = Date.now();
-  const { report, usage } = await reviewPuzzle(puzzle);
+  const { report, usage } = await reviewPuzzle(puzzle, args.scope);
   const secs = ((Date.now() - t0) / 1000).toFixed(1);
 
   const counts = { high: 0, medium: 0, low: 0 };
@@ -60,7 +70,9 @@ async function main() {
     console.error(`     fix:   ${f.suggestion}`);
   }
 
-  const out = args.out || `${PUZZLES_DIR}/${basename(args.input).replace(/\.json$/i, "")}.qa.json`;
+  const scopeTag = args.scope === "full" ? "" : `.${args.scope}`;
+  const out =
+    args.out || `${PUZZLES_DIR}/${basename(args.input).replace(/\.json$/i, "")}.qa${scopeTag}.json`;
   mkdirSync(dirname(out), { recursive: true });
   writeFileSync(out, JSON.stringify(report, null, 2));
   console.error(`\nwrote QA report -> ${out}`);

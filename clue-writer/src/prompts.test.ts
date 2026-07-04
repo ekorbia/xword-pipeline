@@ -75,6 +75,29 @@ test("QA review message states day and size class", () => {
   assert.ok(msg.includes("Grid: 5×5 — MINI class."));
 });
 
+test("QA scope: grid omits clues; clue/full keep them; each names its scope", () => {
+  // grid scope reviews answers only — no clue text, so its findings apply to
+  // every tier written on this grid.
+  const grid = buildReviewMessage(puzzle5, "grid");
+  assert.ok(grid.includes("GRID-LEVEL ONLY"));
+  assert.ok(grid.includes("SPAM"), "grid scope keeps the answers");
+  assert.ok(!grid.includes("Canned lunch staple"), "grid scope must drop clue text");
+  assert.ok(grid.includes("Grid: 5×5 — MINI class."), "size still stated in grid scope");
+
+  // clue scope carries the clues and is judged against the day.
+  const clue = buildReviewMessage(puzzle5, "clue");
+  assert.ok(clue.includes("SCOPE — CLUE-LEVEL"));
+  assert.ok(clue.includes("Canned lunch staple"), "clue scope keeps clue text");
+  assert.ok(clue.includes("Target day: Wednesday"));
+
+  // full scope (the single-tier default) reviews everything.
+  const full = buildReviewMessage(puzzle5, "full");
+  assert.ok(full.includes("SCOPE — FULL"));
+  assert.ok(full.includes("Canned lunch staple"));
+  // default arg is "full".
+  assert.equal(buildReviewMessage(puzzle5), full);
+});
+
 test("QA editor guide embeds the writer's day rubric and the size classes", () => {
   assert.ok(EDITOR_GUIDE.includes("WEDNESDAY — medium"), "day rubric missing from editor guide");
   assert.ok(EDITOR_GUIDE.includes("SATURDAY — the hardest puzzle"));

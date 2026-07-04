@@ -8,6 +8,14 @@
   (which additionally reaches Tuesday and Thursday/"Tricky"). The single
   tier→day mapping now lives in one place (`TIER_TO_DAY` in `styleGuide.ts`);
   `run-pipeline.sh` and the docs mirror it.
+- **Scoped QA review (`qa --scope grid|clue|full`).** Multi-tier runs now
+  review the grid once (fill, duplicate answers, Naticks, theme answers —
+  identical across tiers → `${name}.qa.grid.json`) and the clues per tier
+  (accuracy/difficulty/style → `${name}.qa.<tier>.json`), instead of a full
+  review per tier. Cuts the redundant grid analysis from N passes to 1
+  (≈⅓ off QA for 3 tiers) and stops the same fill/dupe finding repeating in
+  every tier report. Single-tier runs are unchanged (one `full` review). The
+  three scopes share one cached system prompt.
 - **Expert clue tier** — clue writing now spans the full Easy → Expert range.
 - **Duplicate-answer detection at two layers.** The Rust fill gate rejects any
   grid whose answers share a root — equal stems (`TEN`/`TENTH`, `EVEN`/`UNEVENLY`),

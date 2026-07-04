@@ -215,8 +215,9 @@ for (( i=0; i<NUM_PUZZLES; i++ )); do
   if [[ "$rc" -eq 0 ]]; then
     STATUS+=("ok")
     if [[ "$QA" -eq 1 ]]; then
-      # Collect per-tier QA files for this puzzle and derive the worst verdict.
-      qa_files=()
+      # Collect the shared grid review + per-tier clue reviews and derive the
+      # worst verdict across all of them (grid findings live in .qa.grid.json).
+      qa_files=("$OUT_PUZZLES/${name}.qa.grid.json")
       IFS=',' read -ra _T_LOCAL <<< "$TIERS"
       for t in "${_T_LOCAL[@]}"; do
         qa_files+=("$OUT_PUZZLES/${name}.qa.${t}.json")

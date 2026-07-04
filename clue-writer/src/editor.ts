@@ -8,6 +8,24 @@ import { streamStructured, STRUCTURED_MAX_TOKENS } from "./llm.js";
 
 const MODEL = MODELS.qa;
 
+// A review can be scoped so multi-tier puzzles don't pay for the same grid
+// analysis N times. GRID findings (fill, duplicate answers, Naticks, theme
+// answers, answer-level breakfast) are identical across every clue set on a
+// grid, so they're reviewed ONCE. CLUE findings (accuracy, difficulty, style,
+// answer-in-clue, theme cluing) are per tier. "full" reviews everything (the
+// single-tier default). The system prompt is shared across all three scopes,
+// so the prompt cache is reused; only this volatile directive changes.
+export type QAScope = "grid" | "clue" | "full";
+
+const SCOPE_DIRECTIVE: Record<QAScope, string> = {
+  grid:
+    "SCOPE — GRID-LEVEL ONLY. Review what is intrinsic to the filled grid and its ANSWERS, independent of how any answer is clued: FILL quality, DUPLICATE answers / shared roots between two answers, unfair CROSSINGS (Naticks), ANSWERS that fail the breakfast test, and theme-ANSWER consistency. These are identical for every clue set written on this grid, so they are reviewed once, here. Do NOT judge clue wording, accuracy, difficulty, style, or answer-in-clue duplicates — a separate per-tier pass owns those. You are given the answers only (no clues). Use only these categories: fill, duplicate, fairness, breakfast-test, theme.",
+  clue:
+    "SCOPE — CLUE-LEVEL. The grid and its answers were reviewed separately; treat the FILL as settled. Review only the CLUES against the target day and size class: clue ACCURACY, DIFFICULTY calibration, an answer (or its root) appearing in any clue, clue wording that fails the breakfast test, whether theme CLUES honor the theme, and STYLE. Do NOT report weak fill, duplicate answers, or Natick geometry unless a specific CLUE is the cause. Use only these categories: clue-accuracy, difficulty, duplicate, breakfast-test, theme, style.",
+  full:
+    "SCOPE — FULL. Review every category in your checklist (fill, duplicate, clue-accuracy, fairness, difficulty, breakfast-test, theme, style).",
+};
+
 export const EDITOR_GUIDE = `You are the test-solving editor for a New York Times-caliber crossword. You receive a FINISHED puzzle — the filled grid plus every clue — and produce a rigorous editorial review. Your job is to catch what a careful editor catches before publication. Be specific, fair, and concrete; every finding must name a location and a fix.
 
 # What to check
@@ -54,7 +72,7 @@ const QAReportSchema = z.object({
   findings: z.array(QAFindingSchema),
 });
 
-export function buildReviewMessage(p: CluedPuzzle): string {
+export function buildReviewMessage(p: CluedPuzzle, scope: QAScope = "full"): string {
   const lines: string[] = [];
   lines.push(`Puzzle type: ${p.themed ? "THEMED" : "themeless"}   Target day: ${p.day}`);
   lines.push(sizeLine(p.fill.length, p.fill[0]?.length ?? p.fill.length));
@@ -62,9 +80,29 @@ export function buildReviewMessage(p: CluedPuzzle): string {
     lines.push(`Stated theme answers: ${p.themes.join(", ")}`);
   }
   lines.push("");
+  lines.push(SCOPE_DIRECTIVE[scope]);
+  lines.push("");
   lines.push("Filled grid (# = black square):");
   lines.push(p.fill.join("\n"));
   lines.push("");
+
+  // The grid review is clue-independent (so its findings apply to every tier),
+  // so it gets the answers only — smaller prompt, and no clue text to grade.
+  if (scope === "grid") {
+    const block = (title: string, entries: CluedPuzzle["across"]) => {
+      lines.push(title);
+      for (const e of entries) {
+        lines.push(`  ${e.num}${e.dir} = ${e.answer}${e.theme ? " [THEME]" : ""}`);
+      }
+    };
+    block("ACROSS answers:", p.across);
+    lines.push("");
+    block("DOWN answers:", p.down);
+    lines.push("");
+    lines.push("Review the GRID and answers per the scope above and return the structured report.");
+    return lines.join("\n");
+  }
+
   const block = (title: string, entries: CluedPuzzle["across"]) => {
     lines.push(title);
     for (const e of entries) {
@@ -75,11 +113,15 @@ export function buildReviewMessage(p: CluedPuzzle): string {
   lines.push("");
   block("DOWN (answer — clue):", p.down);
   lines.push("");
-  lines.push("Review this puzzle per your editorial checklist and return the structured report.");
+  lines.push("Review this puzzle per the scope above and return the structured report.");
   return lines.join("\n");
 }
 
-export async function reviewPuzzle(p: CluedPuzzle, client = new Anthropic()): Promise<{ report: QAReport; usage: { input: number; output: number; cacheRead: number } }> {
+export async function reviewPuzzle(
+  p: CluedPuzzle,
+  scope: QAScope = "full",
+  client = new Anthropic(),
+): Promise<{ report: QAReport; usage: { input: number; output: number; cacheRead: number } }> {
   const { output: report, usage } = await streamStructured(
     client,
     {
@@ -88,10 +130,10 @@ export async function reviewPuzzle(p: CluedPuzzle, client = new Anthropic()): Pr
       thinking: { type: "adaptive" },
       system: [{ type: "text", text: EDITOR_GUIDE, cache_control: { type: "ephemeral", ttl: "1h" } }],
       output_config: { effort: "high", format: zodOutputFormat(QAReportSchema) },
-      messages: [{ role: "user", content: buildReviewMessage(p) }],
+      messages: [{ role: "user", content: buildReviewMessage(p, scope) }],
     },
     QAReportSchema,
-    "QA reviewer",
+    `QA reviewer (${scope})`,
   );
   return { report, usage };
 }

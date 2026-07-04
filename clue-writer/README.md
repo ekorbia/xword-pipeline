@@ -109,8 +109,14 @@ npm run qa -- examples/sample-clued.json --dry-run
 | Flag | Default | Description |
 |------|---------|-------------|
 | `<clued.json>` | (required) | A clued-puzzle JSON (output of `clue`) |
-| `--out PATH` | `../out/puzzles/<input>.qa.json` | Output QA report |
+| `--scope T` | `full` | `grid` = fill/duplicate answers/Naticks/theme answers (clue-independent, so run once per grid); `clue` = accuracy/difficulty/style/answer-in-clue (per tier); `full` = both |
+| `--out PATH` | `../out/puzzles/<input>.qa[.<scope>].json` | Output QA report (scope tag added for `grid`/`clue`) |
 | `--dry-run` | off | Print the review prompt and exit |
+
+Scope lets a multi-tier puzzle skip re-analyzing the same grid for each tier:
+`run-pipeline.sh --tiers` runs one `grid` review plus a `clue` review per tier.
+The three scopes share one cached system prompt, so the prompt cache is reused
+across them.
 
 ## `explain` — post-solve explanations
 

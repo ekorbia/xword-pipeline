@@ -514,30 +514,45 @@ fi
 T_CLUE=$((SECONDS - T_CLUE_START))
 
 # ---- QA + explain (run in parallel) ----
-# QA: in multi-tier mode, review EVERY tier file (each carries its own day
-# calibration in the JSON), not just the primary. In single-tier mode, QA the
-# only clued file.
+# QA: in multi-tier mode the review is SPLIT to avoid re-analyzing the same grid
+# N times — ONE grid-scope pass (fill, duplicate answers, Naticks, theme
+# answers; identical across every tier) plus a clue-scope pass per tier
+# (accuracy/difficulty/style). Single-tier mode runs one full-scope review.
 # Explain: always runs once against PRIMARY_CLUED — explanations are
 # tier-agnostic (they explain why the answer fits, not why the clue is hard).
 T_POST_START=$SECONDS
 declare -a _POST_PIDS=()
 declare -a _POST_LABELS=()
-declare -a _QA_OUTPUTS=()        # parallel arrays for per-tier verdict summary
+declare -a _QA_OUTPUTS=()        # parallel arrays for the verdict summary
 declare -a _QA_LABELS=()
+declare -a _QA_CLUED=()          # clued file each QA output reviewed (for revise hints)
 if [[ "$NO_QA" -eq 0 ]]; then
   if [[ -n "$TIERS" ]]; then
+    # ONE grid-scope review (the grid is identical across tiers) + a clue-scope
+    # review per tier. Cuts the redundant fill/dupe/Natick analysis from N
+    # passes to 1 and de-duplicates those findings across the tier reports.
+    grid_clued="${_TIER_FILES[0]}"
+    grid_qa="$OUT/puzzles/${NAME}.qa.grid.json"
+    echo "==> editorial QA (Claude) [grid] on $(basename "$grid_clued") [parallel]"
+    (
+      T0=$SECONDS
+      trap 'echo $((SECONDS - T0)) > "$TIMING_DIR/qa-grid.t"' EXIT
+      cd "$CLUE" && npx --yes tsx src/qaCli.ts "$grid_clued" --scope grid --out "$grid_qa"
+    ) &
+    _POST_PIDS+=("$!"); _POST_LABELS+=("QA[grid]")
+    _QA_OUTPUTS+=("$grid_qa"); _QA_LABELS+=("grid"); _QA_CLUED+=("$grid_clued")
     for i in "${!_TIER_NAMES[@]}"; do
       tier="${_TIER_NAMES[$i]}"
       tier_clued="${_TIER_FILES[$i]}"
       tier_qa="$OUT/puzzles/${NAME}.qa.${tier}.json"
-      echo "==> editorial QA (Claude) [${tier}] on $(basename "$tier_clued") [parallel]"
+      echo "==> editorial QA (Claude) [${tier} clues] on $(basename "$tier_clued") [parallel]"
       (
         T0=$SECONDS
         trap 'echo $((SECONDS - T0)) > "$TIMING_DIR/qa-'"$tier"'.t"' EXIT
-        cd "$CLUE" && npx --yes tsx src/qaCli.ts "$tier_clued" --out "$tier_qa"
+        cd "$CLUE" && npx --yes tsx src/qaCli.ts "$tier_clued" --scope clue --out "$tier_qa"
       ) &
       _POST_PIDS+=("$!"); _POST_LABELS+=("QA[${tier}]")
-      _QA_OUTPUTS+=("$tier_qa"); _QA_LABELS+=("$tier")
+      _QA_OUTPUTS+=("$tier_qa"); _QA_LABELS+=("$tier"); _QA_CLUED+=("$tier_clued")
     done
   else
     echo "==> editorial QA (Claude) on $(basename "$PRIMARY_CLUED") [parallel]"
@@ -547,7 +562,7 @@ if [[ "$NO_QA" -eq 0 ]]; then
       cd "$CLUE" && npx --yes tsx src/qaCli.ts "$PRIMARY_CLUED" --out "$QA_FILE_PRIMARY"
     ) &
     _POST_PIDS+=("$!"); _POST_LABELS+=("QA")
-    _QA_OUTPUTS+=("$QA_FILE_PRIMARY"); _QA_LABELS+=("primary")
+    _QA_OUTPUTS+=("$QA_FILE_PRIMARY"); _QA_LABELS+=("primary"); _QA_CLUED+=("$PRIMARY_CLUED")
   fi
 fi
 if [[ "$EXPLAIN" -eq 1 ]]; then
@@ -615,19 +630,21 @@ if [[ "$NO_QA" -eq 0 && "$WORST_VERDICT" != "ready" ]]; then
   echo ""
   echo "  Not all tiers 'ready'? Fix findings — see README.md → 'Fixing QA findings'."
   if [[ -n "$TIERS" ]]; then
-    echo "  Each per-tier QA file pairs 1:1 with its clued.<tier>.json — revise that tier's clues:"
+    echo "  The grid review is shared; each tier review pairs with its clued.<tier>.json:"
     for i in "${!_QA_LABELS[@]}"; do
-      if [[ "${_QA_VERDICTS[$i]}" != "ready" ]]; then
-        tier="${_QA_LABELS[$i]}"
-        tier_clued="${_TIER_FILES[$i]}"
-        tier_qa="${_QA_OUTPUTS[$i]}"
-        echo "    [$tier] (cd clue-writer && npm run clue -- $tier_clued --revise $tier_qa)"
+      [[ "${_QA_VERDICTS[$i]}" == "ready" ]] && continue
+      label="${_QA_LABELS[$i]}"
+      qa="${_QA_OUTPUTS[$i]}"
+      if [[ "$label" == "grid" ]]; then
+        echo "    [grid] fill/dupes/crossings need a GRID change: re-run with --grid $((GRID+1)), or stricter --keep-mean / --max-iffy 0.  ($qa)"
+      else
+        echo "    [$label] (cd clue-writer && npm run clue -- ${_QA_CLUED[$i]} --revise $qa)"
       fi
     done
   else
     echo "  Clue-level:  (cd clue-writer && npm run clue -- $PRIMARY_CLUED --revise ${_QA_OUTPUTS[0]})"
+    echo "  Grid-level:  re-run with --grid $((GRID+1)), or stricter --keep-mean / --max-iffy 0."
   fi
-  echo "  Grid-level:  re-run with --grid $((GRID+1)), or stricter --keep-mean / --max-iffy 0."
 fi
 
 # ---- timing summary ----

@@ -280,10 +280,15 @@ after solving. Each tier is day-calibrated:
 | expert | Saturday         |
 
 `run-pipeline.sh --tiers` does the whole thing in one command. **In multi-tier
-mode, QA reviews each tier independently** against its own day rubric, so a
-"too easy for Saturday" finding from QA on the expert tier is meaningful (it
-sees expert clues calibrated to Saturday). Per-tier outputs land at
-`out/puzzles/${name}.qa.${tier}.json`.
+mode, QA is split by scope.** The grid facts (fill quality, duplicate answers,
+Naticks, theme answers) are identical across every tier, so they're reviewed
+**once** — output `out/puzzles/${name}.qa.grid.json`. The clues are reviewed
+**per tier** against that tier's own day rubric — outputs
+`out/puzzles/${name}.qa.${tier}.json` — so a "too easy for Saturday" finding on
+the expert tier is still meaningful. This cuts the redundant grid analysis from
+N passes to 1 and stops the same fill/dupe finding appearing in every tier's
+report. (`qa --scope grid|clue|full` exposes the split directly; single-tier
+runs use one `full` review as before.)
 
 ```bash
 # All four tiers + post-solve explanations, end-to-end:
@@ -302,9 +307,11 @@ player's `import-puzzle` derives the manifest `difficulty` label from the
 > onto [wordfuzz.com/test](https://wordfuzz.com/test) — it's the same engine
 > that powers the daily puzzles, running entirely in your browser.
 
-Cost: ~N× clue + N× QA per puzzle on Opus 4.7, + 1× explain on Haiku, where N is the
-number of tiers. Backward compatible — single-tier puzzles imported the old
-positional way (`<clued.json>`) still work.
+Cost: ~N× clue + (1 grid + N clue) QA per puzzle on Opus 4.7, + 1× explain on
+Haiku, where N is the number of tiers. The scoped QA split makes the QA portion
+cheaper than N full reviews (the heavy grid analysis runs once, not N times) —
+roughly a third off QA for 3 tiers. Backward compatible — single-tier puzzles
+imported the old positional way (`<clued.json>`) still work.
 
 ## Generating a batch of puzzles in one command
 
