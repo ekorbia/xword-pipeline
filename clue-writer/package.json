@@ -10,6 +10,7 @@
     "explain": "tsx src/explainCli.ts",
     "theme-idea": "tsx src/themeCli.ts",
     "export": "tsx src/exportCli.ts",
+    "grade-words": "tsx src/gradeCli.ts",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test src/*.test.ts"
   },

@@ -3,7 +3,7 @@
 //! `theme` (themed) binaries so they emit an identical schema.
 
 use crate::grid::{Dir, Puzzle};
-use crate::solver::SolveResult;
+use crate::solver::{SolveResult, SolvedFill};
 use std::collections::HashSet;
 
 pub struct LibEntry {
@@ -28,14 +28,46 @@ pub struct LibGrid {
     pub entries: Vec<LibEntry>,
 }
 
-/// Build a library record from a solved puzzle. `theme_ids` are the entry ids
-/// that were locked theme answers (empty for themeless). Returns None if the
-/// result isn't a solved fill.
+/// Build a library record from a solve result's primary (best-by-mean) fill.
+/// `theme_ids` are the entry ids that were locked theme answers (empty for
+/// themeless). Returns None if the result isn't a solved fill.
 pub fn build_lib_grid(p: &Puzzle, r: &SolveResult, theme_ids: &HashSet<usize>) -> Option<LibGrid> {
-    let (mean, min, iffy, fill) = match (r.mean_score, r.min_score, r.iffy_count, r.fill.as_ref()) {
-        (Some(m), Some(mn), Some(i), Some(f)) => (m, mn, i, f),
+    let (mean, min, iffy) = match (r.mean_score, r.min_score, r.iffy_count) {
+        (Some(m), Some(mn), Some(i)) => (m, mn, i),
         _ => return None,
     };
+    let (letters, fill) = match (r.letters.as_deref(), r.fill.as_ref()) {
+        (Some(l), Some(f)) => (l, f),
+        _ => return None,
+    };
+    Some(build_from_parts(
+        p, letters, mean, min, iffy, fill, theme_ids,
+    ))
+}
+
+/// Build a library record from a specific fill (e.g. the solver's `clean`
+/// alternative when it passes the caller's keep gates).
+pub fn build_lib_grid_from(p: &Puzzle, f: &SolvedFill, theme_ids: &HashSet<usize>) -> LibGrid {
+    build_from_parts(
+        p,
+        &f.letters,
+        f.mean_score,
+        f.min_score,
+        f.iffy_count,
+        &f.fill,
+        theme_ids,
+    )
+}
+
+fn build_from_parts(
+    p: &Puzzle,
+    letters: &[Option<u8>],
+    mean: f64,
+    min: u8,
+    iffy: usize,
+    fill: &[(usize, String, u8)],
+    theme_ids: &HashSet<usize>,
+) -> LibGrid {
     let nums = p.number_entries();
     let mut entries: Vec<LibEntry> = fill
         .iter()
@@ -54,7 +86,7 @@ pub fn build_lib_grid(p: &Puzzle, r: &SolveResult, theme_ids: &HashSet<usize>) -
         })
         .collect();
     entries.sort_by_key(|g| (g.num, g.dir));
-    Some(LibGrid {
+    LibGrid {
         blocks: p.block_count(),
         mean,
         min,
@@ -62,12 +94,26 @@ pub fn build_lib_grid(p: &Puzzle, r: &SolveResult, theme_ids: &HashSet<usize>) -
         themed: !theme_ids.is_empty(),
         template: p.render(None).lines().map(str::to_string).collect(),
         fill: p
-            .render(r.letters.as_deref())
+            .render(Some(letters))
             .lines()
             .map(str::to_string)
             .collect(),
         entries,
-    })
+    }
+}
+
+/// Which member(s) of a root-duplicate pair to try banning for a refill
+/// retry, most-disposable first: non-theme members only (theme answers are
+/// locked and can't be banned), lower score first, shorter on ties. Empty if
+/// neither member is a searchable fill entry.
+pub fn dup_ban_targets<'a>(g: &'a LibGrid, a: &str, b: &str) -> Vec<&'a str> {
+    let mut cands: Vec<&LibEntry> = g
+        .entries
+        .iter()
+        .filter(|e| !e.theme && (e.answer == a || e.answer == b))
+        .collect();
+    cands.sort_by_key(|e| (e.score, e.answer.len()));
+    cands.into_iter().map(|e| e.answer.as_str()).collect()
 }
 
 fn esc(s: &str) -> String {
@@ -133,4 +179,51 @@ pub fn write_json(
         }
     }
     std::fs::write(path, s)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(answer: &str, score: u8, theme: bool) -> LibEntry {
+        LibEntry {
+            num: 1,
+            dir: 'A',
+            row: 0,
+            col: 0,
+            len: answer.len(),
+            answer: answer.to_string(),
+            score,
+            theme,
+        }
+    }
+
+    fn grid(entries: Vec<LibEntry>) -> LibGrid {
+        LibGrid {
+            blocks: 0,
+            mean: 0.0,
+            min: 0,
+            iffy: 0,
+            themed: false,
+            template: Vec::new(),
+            fill: Vec::new(),
+            entries,
+        }
+    }
+
+    #[test]
+    fn dup_ban_targets_prefers_disposable_member() {
+        let g = grid(vec![
+            entry("ARENA", 60, false),
+            entry("RENA", 50, false),
+            entry("SLAMDUNK", 90, true),
+        ]);
+        // Lower score first, so the junkier member is banned before the keeper.
+        assert_eq!(dup_ban_targets(&g, "ARENA", "RENA"), vec!["RENA", "ARENA"]);
+        // A theme member is locked → only the fill member is bannable.
+        assert_eq!(dup_ban_targets(&g, "SLAMDUNK", "ARENA"), vec!["ARENA"]);
+        // Equal scores tie-break shorter-first.
+        let g = grid(vec![entry("ILLS", 50, false), entry("ILL", 50, false)]);
+        assert_eq!(dup_ban_targets(&g, "ILL", "ILLS"), vec!["ILL", "ILLS"]);
+    }
 }

@@ -13,9 +13,13 @@
 //     than latency.
 //   - explain: short, factual, post-solve recaps. Haiku handles these well at
 //     ~1/5 the cost; the explain CLI accepts --model to override per run.
+//   - gradeWords: recognizability judgments over tens of thousands of words —
+//     world knowledge, not deep reasoning, and volume makes cost matter.
+//     Sonnet is the sweet spot; bump to Opus via --model for a quality pass.
 export const MODELS = {
   clue: "claude-opus-4-7",
   qa: "claude-opus-4-7",
   themeIdea: "claude-opus-4-8",
   explain: "claude-haiku-4-5",
+  gradeWords: "claude-sonnet-4-6",
 } as const;

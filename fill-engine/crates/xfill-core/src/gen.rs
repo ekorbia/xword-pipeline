@@ -474,6 +474,30 @@ fn render(block: &[Vec<bool>], n: usize) -> String {
     s
 }
 
+/// Size-aware default for candidate-to-candidate block-count jitter: ±2 on
+/// full-size grids, ±1 on minis/midis (where ±2 is a big relative swing).
+pub fn default_block_jitter(n: usize) -> usize {
+    if n >= 13 {
+        2
+    } else {
+        1
+    }
+}
+
+/// Per-candidate block count: uniform in `base ..= base + jitter` (UP-only).
+/// Blockier grids fill cleaner and more often at every quality gate, so
+/// spreading candidates upward widens the pool where it pays. The original
+/// symmetric ±jitter design measurably hurt at strict gates (15×15, 300
+/// candidates, mean>=78/iffy 0: symmetric kept 1 vs 2-3 for each of 36/37/38
+/// pinned) because below-target templates rarely pass yet burn fill budget —
+/// deliberately open builds should pin a lower exact count instead.
+pub fn jittered_blocks(base: usize, jitter: usize, rng: &mut Rng) -> usize {
+    if jitter == 0 {
+        return base;
+    }
+    base + (rng.next_u64() as usize) % (jitter + 1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -597,5 +621,21 @@ mod tests {
                 .expect("theme slot is an entry");
             assert_eq!(p.entries[ei].len, len, "theme slot has expected length");
         }
+    }
+
+    #[test]
+    fn jittered_blocks_bounds_spread_and_defaults() {
+        let mut rng = Rng::new(42);
+        assert_eq!(jittered_blocks(36, 0, &mut rng), 36, "jitter 0 is exact");
+        let draws: Vec<usize> = (0..200).map(|_| jittered_blocks(36, 2, &mut rng)).collect();
+        assert!(
+            draws.iter().all(|&b| (36..=38).contains(&b)),
+            "up-only: within base ..= base + jitter"
+        );
+        let distinct: std::collections::HashSet<_> = draws.iter().collect();
+        assert_eq!(distinct.len(), 3, "jitter should cover the whole up-range");
+        assert_eq!(default_block_jitter(15), 2);
+        assert_eq!(default_block_jitter(12), 1);
+        assert_eq!(default_block_jitter(5), 1);
     }
 }

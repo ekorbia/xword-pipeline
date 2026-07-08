@@ -3,6 +3,23 @@
 ## [0.1.0]
 
 ### Added
+- **Dup-retry: ban-and-refill instead of discard.** When a gate-passing fill
+  hits the root-duplicate gate, the screeners now ban the more disposable
+  member of the pair (lower score first, shorter on ties; locked seed/theme
+  answers are never banned — `Solver::ban_answer`) and re-solve the candidate
+  at half budget, up to two bans, keeping the refill if it passes the same
+  gates and dup check.
+- **Quality-ladder fill: clean-fill tracking + preference.** The solver's
+  floor ladder now climbs past 50 (tiers 40/50/55/60 in every caller). After
+  the feasibility baseline, the floors at/above the "clean" bar
+  (`SolveConfig::clean_floor`, default 55) get the first half of the
+  remaining time, and the best fill with NO entry below the bar is returned
+  alongside the best-by-mean fill (`SolveResult::clean`).
+- **Per-candidate block-count jitter (up-only).** When `--blocks` is auto,
+  each candidate template draws its count from `target ..= target + jitter`
+  (`gen::jittered_blocks`; +2 on full grids, +1 on minis/midis,
+  `--block-jitter` overrides, pinned counts stay exact). Blockier grids fill
+  cleaner and pass quality gates more often;
 - **`--tier easy|medium|hard|expert`** on the clue writer — the canonical
   player-facing difficulty vocabulary, alongside the finer-grained `--day`
   (which additionally reaches Tuesday and Thursday/"Tricky"). The single

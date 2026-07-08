@@ -11,3 +11,13 @@ clue-writer/node_modules/
 .DS_Store
 *.log
 .env
+
+#
+clue-writer/src/gradeWords.test.ts
+clue-writer/src/gradeCli.ts
+clue-writer/src/gradeWords.ts
+fill-engine/crates/xfill-cli/src/bin/rescore.rs
+fill-engine/data/README.md
+fill-engine/data/xd/
+fill-engine/data/rescores-local.txt
+fill-engine/data/stw/

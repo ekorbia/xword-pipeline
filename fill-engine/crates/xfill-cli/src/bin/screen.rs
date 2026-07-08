@@ -106,7 +106,7 @@ fn main() {
                 let mut solver = Solver::new(&p, &wl);
                 let cfg = SolveConfig {
                     time_limit_s: time,
-                    tiers: vec![40, 50],
+                    tiers: vec![40, 50, 55, 60],
                     seed: *jseed,
                     ..Default::default()
                 };

@@ -130,6 +130,7 @@ fn main() {
     let filled = AtomicUsize::new(0);
     let kept_count = AtomicUsize::new(0);
     let dup_rejects = AtomicUsize::new(0);
+    let dup_rescues = AtomicUsize::new(0);
     let dup_examples: Mutex<Vec<String>> = Mutex::new(Vec::new());
     let dup_checker = xfill_core::dup::DupChecker::new(&wl);
     let kept: Mutex<Vec<LibGrid>> = Mutex::new(Vec::new());
@@ -167,29 +168,55 @@ fn main() {
                     .iter()
                     .filter_map(|&(r, c, _)| p.find_entry(r, c, Dir::Across))
                     .collect();
-                let cfg = SolveConfig {
+                let mut cfg = SolveConfig {
                     time_limit_s: time,
-                    tiers: vec![40, 50],
+                    tiers: vec![40, 50, 55, 60],
                     seed: *jseed,
                     ..Default::default()
                 };
-                let r = solver.solve(&cfg);
-                let d = done.fetch_add(1, Ordering::Relaxed) + 1;
-                if d.is_multiple_of(20) {
-                    eprintln!("  filled {d}/{} ...", jobs.len());
-                }
-                let Some(g) = build_lib_grid(&p, &r, &theme_ids) else {
-                    continue;
-                };
-                filled.fetch_add(1, Ordering::Relaxed);
-                {
-                    let boxed = p.render_boxed(r.letters.as_deref());
-                    let mut b = best_boxed.lock().unwrap();
-                    if b.as_ref().is_none_or(|(m, _, _)| g.mean > *m) {
-                        *b = Some((g.mean, g.iffy, boxed));
+                // Solve → gate → dup-check, retrying up to twice with the
+                // most disposable dup member banned (theme answers are locked
+                // and never banned): a short ban-and-refill rescues most
+                // fills that would die to root-duplicate answers.
+                let mut bans = 0usize;
+                let kept_grid = loop {
+                    let r = solver.solve(&cfg);
+                    if bans == 0 {
+                        let d = done.fetch_add(1, Ordering::Relaxed) + 1;
+                        if d.is_multiple_of(20) {
+                            eprintln!("  filled {d}/{} ...", jobs.len());
+                        }
                     }
-                }
-                if g.mean >= keep_mean && g.iffy <= max_iffy {
+                    // Prefer the clean fill (nothing below the solver's clean
+                    // floor) whenever it passes the keep gates on its own —
+                    // same yield, strictly fewer weak entries.
+                    let clean_pick = r
+                        .clean
+                        .as_ref()
+                        .filter(|c| c.mean_score >= keep_mean && c.iffy_count <= max_iffy);
+                    let (g, letters) = match clean_pick {
+                        Some(c) => (
+                            Some(xfill_core::library::build_lib_grid_from(&p, c, &theme_ids)),
+                            Some(&c.letters[..]),
+                        ),
+                        None => (build_lib_grid(&p, &r, &theme_ids), r.letters.as_deref()),
+                    };
+                    let Some(g) = g else {
+                        break None;
+                    };
+                    if bans == 0 {
+                        filled.fetch_add(1, Ordering::Relaxed);
+                    }
+                    {
+                        let boxed = p.render_boxed(letters);
+                        let mut b = best_boxed.lock().unwrap();
+                        if b.as_ref().is_none_or(|(m, _, _)| g.mean > *m) {
+                            *b = Some((g.mean, g.iffy, boxed));
+                        }
+                    }
+                    if !(g.mean >= keep_mean && g.iffy <= max_iffy) {
+                        break None;
+                    }
                     // Root-duplicate gate (stems, containment, shared embedded
                     // words); theme-vs-theme pairs are exempt (theme sets may
                     // share a word deliberately).
@@ -198,13 +225,28 @@ fn main() {
                         .iter()
                         .map(|e| (e.answer.clone(), e.theme))
                         .collect();
-                    if let Some((a, b)) = dup_checker.find_dup(&answers) {
+                    let Some((a, b)) = dup_checker.find_dup(&answers) else {
+                        break Some(g);
+                    };
+                    let banned_one = bans < 2
+                        && xfill_core::library::dup_ban_targets(&g, &a, &b)
+                            .iter()
+                            .any(|t| solver.ban_answer(t));
+                    if !banned_one {
                         dup_rejects.fetch_add(1, Ordering::Relaxed);
                         let mut ex = dup_examples.lock().unwrap();
                         if ex.len() < 5 {
                             ex.push(format!("{a}/{b}"));
                         }
-                        continue;
+                        break None;
+                    }
+                    bans += 1;
+                    cfg.time_limit_s = time * 0.5;
+                    cfg.seed = cfg.seed.wrapping_add(1);
+                };
+                if let Some(g) = kept_grid {
+                    if bans > 0 {
+                        dup_rescues.fetch_add(1, Ordering::Relaxed);
                     }
                     kept.lock().unwrap().push(g);
                     kept_count.fetch_add(1, Ordering::Relaxed);
@@ -239,6 +281,10 @@ fn main() {
             "({dup_n} clean fill(s) rejected for root-duplicate answers: {})",
             ex.join(", ")
         );
+    }
+    let rescue_n = dup_rescues.load(Ordering::Relaxed);
+    if rescue_n > 0 {
+        println!("({rescue_n} dup-hit fill(s) rescued by ban-and-refill)");
     }
     println!(
         "clean grids kept (mean>={keep_mean}, iffy<={max_iffy}): {} -> wrote {out}",

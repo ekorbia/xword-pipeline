@@ -4,9 +4,9 @@
 //! fill, numbered answers + scores). The vetted source the daily-puzzle pipeline
 //! (clue writing, scheduling) draws from.
 //!
-//! Usage: library [--wordlist PATH] [--size N] [--blocks N] [--candidates N]
-//!                [--time SECS] [--keep-mean F] [--max-iffy N] [--top N]
-//!                [--seed N] [--workers N] [--out PATH]
+//! Usage: library [--wordlist PATH] [--size N] [--blocks N] [--block-jitter N]
+//!                [--candidates N] [--time SECS] [--keep-mean F] [--max-iffy N]
+//!                [--top N] [--seed N] [--workers N] [--out PATH]
 //!
 //! `--size` is the grid dimension (default 15; e.g. 5 or 10 for minis). The
 //! default block count scales with the grid area when `--blocks` is omitted.
@@ -37,7 +37,23 @@ fn main() {
     let wordlist: String = arg("--wordlist", "data/xwordlist.dict".to_string());
     let size: usize = arg("--size", 15);
     // Default block count scales with grid area (~16%): 15→36, 10→16, 5→4.
-    let blocks: usize = arg("--blocks", size * size * 16 / 100);
+    // An explicitly pinned --blocks stays exact; auto varies per candidate
+    // (see gen::jittered_blocks) — override either way with --block-jitter.
+    let blocks_arg: i64 = arg("--blocks", -1);
+    let pinned = blocks_arg >= 0;
+    let blocks: usize = if pinned {
+        blocks_arg as usize
+    } else {
+        size * size * 16 / 100
+    };
+    let block_jitter: usize = arg(
+        "--block-jitter",
+        if pinned {
+            0
+        } else {
+            gen::default_block_jitter(size)
+        },
+    );
     let candidates: usize = arg("--candidates", 200);
     let time: f64 = arg("--time", 2.0);
     let keep_mean: f64 = arg("--keep-mean", 72.0);
@@ -66,7 +82,8 @@ fn main() {
     while jobs.len() < candidates && tries < max_tries {
         tries += 1;
         let jseed = rng.next_u64();
-        let Some(tpl) = gen::generate(size, blocks, &mut rng, 4000) else {
+        let b = gen::jittered_blocks(blocks, block_jitter, &mut rng);
+        let Some(tpl) = gen::generate(size, b, &mut rng, 4000) else {
             continue;
         };
         if Puzzle::from_template(&tpl).orphan_cells() > 0 {
@@ -95,6 +112,7 @@ fn main() {
     let kept_count = AtomicUsize::new(0);
     let filled = AtomicUsize::new(0);
     let dup_rejects = AtomicUsize::new(0);
+    let dup_rescues = AtomicUsize::new(0);
     let dup_examples: Mutex<Vec<String>> = Mutex::new(Vec::new());
     let dup_checker = xfill_core::dup::DupChecker::new(&wl);
     let no_theme: HashSet<usize> = HashSet::new();
@@ -112,39 +130,80 @@ fn main() {
                 }
                 let (tpl, jseed) = &jobs[i];
                 let p = Puzzle::from_template(tpl);
-                let cfg = SolveConfig {
+                let mut solver = Solver::new(&p, &wl);
+                let mut cfg = SolveConfig {
                     time_limit_s: time,
-                    tiers: vec![40, 50],
+                    tiers: vec![40, 50, 55, 60],
                     seed: *jseed,
                     ..Default::default()
                 };
-                let r = Solver::new(&p, &wl).solve(&cfg);
-                let d = done.fetch_add(1, Ordering::Relaxed) + 1;
-                if d.is_multiple_of(50) {
-                    eprintln!("  filled {d}/{} ...", jobs.len());
-                }
-                let Some(g) = build_lib_grid(&p, &r, &no_theme) else {
+                // Solve → gate → dup-check, retrying up to twice with the
+                // most disposable dup member banned: about half of the
+                // gate-passing fills die to root-duplicate answers, and a
+                // short ban-and-refill rescues most of them.
+                let mut bans = 0usize;
+                let kept_grid = loop {
+                    let r = solver.solve(&cfg);
+                    if bans == 0 {
+                        let d = done.fetch_add(1, Ordering::Relaxed) + 1;
+                        if d.is_multiple_of(50) {
+                            eprintln!("  filled {d}/{} ...", jobs.len());
+                        }
+                    }
+                    // Prefer the clean fill (nothing below the solver's clean
+                    // floor) whenever it passes the keep gates on its own —
+                    // same yield, strictly fewer weak entries.
+                    let clean_pick = r
+                        .clean
+                        .as_ref()
+                        .filter(|c| c.mean_score >= keep_mean && c.iffy_count <= max_iffy);
+                    let g = match clean_pick {
+                        Some(c) => Some(xfill_core::library::build_lib_grid_from(&p, c, &no_theme)),
+                        None => build_lib_grid(&p, &r, &no_theme),
+                    };
+                    let Some(g) = g else {
+                        break None;
+                    };
+                    if bans == 0 {
+                        filled.fetch_add(1, Ordering::Relaxed);
+                    }
+                    if g.mean < keep_mean || g.iffy > max_iffy {
+                        break None;
+                    }
+                    // Root-duplicate gate (TEN/TENTH, EVEN/UNEVENLY, shared
+                    // embedded words): editors flag these as high-severity
+                    // dups, so don't keep such grids.
+                    let answers: Vec<(String, bool)> = g
+                        .entries
+                        .iter()
+                        .map(|e| (e.answer.clone(), e.theme))
+                        .collect();
+                    let Some((a, b)) = dup_checker.find_dup(&answers) else {
+                        break Some(g);
+                    };
+                    let banned_one = bans < 2
+                        && xfill_core::library::dup_ban_targets(&g, &a, &b)
+                            .iter()
+                            .any(|t| solver.ban_answer(t));
+                    if !banned_one {
+                        dup_rejects.fetch_add(1, Ordering::Relaxed);
+                        let mut ex = dup_examples.lock().unwrap();
+                        if ex.len() < 5 {
+                            ex.push(format!("{a}/{b}"));
+                        }
+                        break None;
+                    }
+                    bans += 1;
+                    // Refills are cheap — the template provably fills — so
+                    // half the original budget recovers it almost always.
+                    cfg.time_limit_s = time * 0.5;
+                    cfg.seed = cfg.seed.wrapping_add(1);
+                };
+                let Some(g) = kept_grid else {
                     continue;
                 };
-                filled.fetch_add(1, Ordering::Relaxed);
-                if g.mean < keep_mean || g.iffy > max_iffy {
-                    continue;
-                }
-                // Root-duplicate gate (TEN/TENTH, EVEN/UNEVENLY, shared
-                // embedded words): editors flag these as high-severity dups,
-                // so don't keep such grids.
-                let answers: Vec<(String, bool)> = g
-                    .entries
-                    .iter()
-                    .map(|e| (e.answer.clone(), e.theme))
-                    .collect();
-                if let Some((a, b)) = dup_checker.find_dup(&answers) {
-                    dup_rejects.fetch_add(1, Ordering::Relaxed);
-                    let mut ex = dup_examples.lock().unwrap();
-                    if ex.len() < 5 {
-                        ex.push(format!("{a}/{b}"));
-                    }
-                    continue;
+                if bans > 0 {
+                    dup_rescues.fetch_add(1, Ordering::Relaxed);
                 }
                 kept.lock().unwrap().push(g);
                 kept_count.fetch_add(1, Ordering::Relaxed);
@@ -178,6 +237,10 @@ fn main() {
             "({dup_n} clean fill(s) rejected for root-duplicate answers: {})",
             ex.join(", ")
         );
+    }
+    let rescue_n = dup_rescues.load(Ordering::Relaxed);
+    if rescue_n > 0 {
+        eprintln!("({rescue_n} dup-hit fill(s) rescued by ban-and-refill)");
     }
 
     write_json(&out, &kept, &wordlist, blocks, &[]).expect("write library file");

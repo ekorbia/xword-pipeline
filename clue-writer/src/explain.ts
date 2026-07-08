@@ -16,8 +16,9 @@ export const DEFAULT_EXPLAIN_MODEL: string = MODELS.explain;
  * Whether the given model supports `thinking: { type: "adaptive" }` AND the
  * `output_config.effort` parameter. Both are gated to current Opus 4.6+/Sonnet
  * 4.6 per Anthropic's models docs (verified 2026-06). Haiku 4.5 rejects both.
+ * (Exported for other passes — e.g. gradeWords — that share the gate.)
  */
-function supportsAdaptiveReasoning(model: string): boolean {
+export function supportsAdaptiveReasoning(model: string): boolean {
   return /^claude-opus-4-[6789]/.test(model) || /^claude-sonnet-4-6/.test(model);
 }
 

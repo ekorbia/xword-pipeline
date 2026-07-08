@@ -42,20 +42,37 @@ pub struct SolveConfig {
     pub cand_cap: usize,
     /// Return the first solution found (skip best-of optimization).
     pub stop_on_first: bool,
+    /// A fill whose every searched entry scores >= this is "clean"; the best
+    /// clean fill (by mean) is tracked and returned alongside the overall
+    /// best so callers can prefer it when it passes their gates. 0 disables.
+    pub clean_floor: u8,
 }
 
 impl Default for SolveConfig {
     fn default() -> Self {
         SolveConfig {
             time_limit_s: 30.0,
-            tiers: vec![50, 40],
+            tiers: vec![40, 50, 55, 60],
             seed: 0,
             initial_budget: 2_000,
             max_budget: 400_000,
             cand_cap: 400,
             stop_on_first: false,
+            clean_floor: 55,
         }
     }
+}
+
+/// A complete fill with its quality stats. `letters` is per-cell (0..25);
+/// `fill` lists (entry_id, answer, score) for searched entries followed by
+/// locked theme answers. Stats cover the SEARCHED entries only.
+#[derive(Clone)]
+pub struct SolvedFill {
+    pub letters: Vec<Option<u8>>,
+    pub mean_score: f64,
+    pub min_score: u8,
+    pub iffy_count: usize,
+    pub fill: Vec<(usize, String, u8)>,
 }
 
 pub struct SolveResult {
@@ -68,6 +85,11 @@ pub struct SolveResult {
     pub min_score: Option<u8>,
     pub iffy_count: Option<usize>,
     pub fill: Option<Vec<(usize, String, u8)>>,
+    /// Best fill (by mean) with no searched entry below `cfg.clean_floor`,
+    /// when one was found. May describe the same fill as the primary fields.
+    /// Callers should prefer it whenever it passes their keep gates on its
+    /// own — same yield, strictly fewer weak entries.
+    pub clean: Option<SolvedFill>,
 }
 
 struct TrailFrame {
@@ -84,14 +106,6 @@ enum Outcome {
     Exhausted,
     Budget,
     TimeLimit,
-}
-
-struct Best {
-    mean: f64,
-    letters: Vec<Option<u8>>,
-    fill: Vec<(usize, String, u8)>,
-    min: u8,
-    iffy: usize,
 }
 
 pub struct Solver<'a> {
@@ -113,6 +127,9 @@ pub struct Solver<'a> {
     locked_used: Vec<(usize, usize)>,  // (len, word_idx) of locks present in wordlist
     locked_out: Vec<(usize, String, u8)>, // (entry_id, answer, score) for output
     n_searchable: usize,               // non-locked entries to fill
+    /// (len, word_idx) the search must never assign — set via `ban_answer`
+    /// (e.g. a root-duplicate member; re-solving without it rescues the grid).
+    banned: Vec<(usize, usize)>,
     nodes: u64,
     attempt_budget: u64,
     deadline: Instant,
@@ -219,6 +236,7 @@ impl<'a> Solver<'a> {
             locked_used,
             locked_out,
             n_searchable,
+            banned: Vec::new(),
             nodes: 0,
             attempt_budget: u64::MAX,
             deadline: Instant::now(),
@@ -228,6 +246,35 @@ impl<'a> Solver<'a> {
         };
         s.compute_base();
         Ok(s)
+    }
+
+    /// Exclude an answer from all subsequent solves on this solver (e.g. one
+    /// member of a root-duplicate pair found post-solve — re-solving without
+    /// it usually rescues the grid). Returns false if the answer isn't a
+    /// searchable wordlist entry (unknown word, bad letters, or locked).
+    pub fn ban_answer(&mut self, answer: &str) -> bool {
+        let mut letters: Vec<u8> = Vec::with_capacity(answer.len());
+        for ch in answer.chars() {
+            let up = ch.to_ascii_uppercase();
+            if !up.is_ascii_uppercase() {
+                return false;
+            }
+            letters.push(up as u8 - b'A');
+        }
+        let len = letters.len();
+        if !(crate::wordlist::MIN_LEN..=crate::wordlist::MAX_LEN).contains(&len) {
+            return false;
+        }
+        let Some(w) = self.wl.len_data(len).index_of(&letters) else {
+            return false;
+        };
+        if self.locked_used.contains(&(len, w)) {
+            return false; // locked answers are placed, not searched — unbannable
+        }
+        if !self.banned.contains(&(len, w)) {
+            self.banned.push((len, w));
+        }
+        true
     }
 
     /// Constrain every entry's domain by the combined prefill (template + locks)
@@ -252,7 +299,8 @@ impl<'a> Solver<'a> {
         let t0 = Instant::now();
         let global_deadline = t0 + std::time::Duration::from_secs_f64(cfg.time_limit_s);
 
-        let mut best: Option<Best> = None;
+        let mut best: Option<SolvedFill> = None;
+        let mut clean: Option<SolvedFill> = None;
         let mut total_nodes = 0u64;
         let mut restarts = 0u64;
 
@@ -267,6 +315,7 @@ impl<'a> Solver<'a> {
             cfg.tiers.clone()
         };
         tiers.sort_unstable();
+        tiers.dedup();
         let lowest = tiers[0];
 
         // Phase 1 — feasibility: restart at the lowest floor until first solve.
@@ -277,16 +326,51 @@ impl<'a> Solver<'a> {
             let outcome = self.attempt(lowest, budget, seed, global_deadline);
             total_nodes += self.nodes;
             if outcome == Outcome::Solved {
-                best = Some(self.snapshot_solution());
+                self.consider(&mut best, &mut clean, cfg.clean_floor);
             }
             budget = (budget * 2).min(cfg.max_budget);
         }
 
-        // Phase 2 — polish: with a baseline secured, spend remaining time
-        // round-robining over the tiers (highest/cleanest first), keeping the
-        // best fill by mean score. Higher floors yield cleaner fills when
-        // feasible; the lowest floor keeps contributing diverse alternatives.
-        if best.is_some() && !cfg.stop_on_first && !tiers.is_empty() {
+        if best.is_some() && !cfg.stop_on_first {
+            // Phase 2 — clean hunt: the floors at/above the clean bar get the
+            // FIRST slice (half) of the remaining time, highest floor first,
+            // each with its own doubling budgets. Clean fills are found fast
+            // when they exist at all (measured on 15x15: the floor-60 solve
+            // rate barely moves between 2s and 1s of dedicated search), so a
+            // bounded up-front slice captures most of them without starving
+            // the mean polish below. First clean solve ends the hunt — the
+            // polish round-robin keeps improving every floor afterwards.
+            let hunt_floors: Vec<u8> = tiers
+                .iter()
+                .rev()
+                .copied()
+                .filter(|&f| cfg.clean_floor > 0 && f >= cfg.clean_floor && f > lowest)
+                .collect();
+            let hunt_start = Instant::now();
+            if !hunt_floors.is_empty() && hunt_start < global_deadline && clean.is_none() {
+                let slice = (global_deadline - hunt_start) / (2 * hunt_floors.len() as u32);
+                'hunt: for (i, &floor) in hunt_floors.iter().enumerate() {
+                    let tier_deadline = (hunt_start + slice * (i as u32 + 1)).min(global_deadline);
+                    budget = cfg.initial_budget;
+                    while Instant::now() < tier_deadline {
+                        restarts += 1;
+                        let seed = self.rng.next_u64();
+                        let outcome = self.attempt(floor, budget, seed, tier_deadline);
+                        total_nodes += self.nodes;
+                        if outcome == Outcome::Solved {
+                            self.consider(&mut best, &mut clean, cfg.clean_floor);
+                            break 'hunt;
+                        }
+                        budget = (budget * 2).min(cfg.max_budget);
+                    }
+                }
+            }
+
+            // Phase 3 — polish: spend the remaining time round-robining over
+            // the tiers (highest/cleanest first), keeping the best fill by
+            // mean score — and the best clean fill alongside. Higher floors
+            // yield cleaner fills when feasible; the lowest floor keeps
+            // contributing diverse alternatives.
             let mut polish_floors: Vec<u8> = tiers.clone();
             polish_floors.sort_unstable_by(|a, b| b.cmp(a)); // desc
             let mut idx = 0usize;
@@ -299,10 +383,7 @@ impl<'a> Solver<'a> {
                 let outcome = self.attempt(floor, budget, seed, global_deadline);
                 total_nodes += self.nodes;
                 if outcome == Outcome::Solved {
-                    let cand = self.snapshot_solution();
-                    if cand.mean > best.as_ref().unwrap().mean {
-                        best = Some(cand);
-                    }
+                    self.consider(&mut best, &mut clean, cfg.clean_floor);
                 }
                 budget = (budget * 2).min(cfg.max_budget);
                 // reset budget growth each full cycle so every floor gets small
@@ -315,17 +396,27 @@ impl<'a> Solver<'a> {
 
         let elapsed = t0.elapsed().as_secs_f64();
         match best {
-            Some(b) => SolveResult {
-                letters: Some(b.letters),
-                nodes: total_nodes,
-                restarts,
-                elapsed_s: elapsed,
-                reason: "solved",
-                mean_score: Some(b.mean),
-                min_score: Some(b.min),
-                iffy_count: Some(b.iffy),
-                fill: Some(b.fill),
-            },
+            Some(b) => {
+                let SolvedFill {
+                    letters,
+                    mean_score,
+                    min_score,
+                    iffy_count,
+                    fill,
+                } = b;
+                SolveResult {
+                    letters: Some(letters),
+                    nodes: total_nodes,
+                    restarts,
+                    elapsed_s: elapsed,
+                    reason: "solved",
+                    mean_score: Some(mean_score),
+                    min_score: Some(min_score),
+                    iffy_count: Some(iffy_count),
+                    fill: Some(fill),
+                    clean,
+                }
+            }
             None => SolveResult {
                 letters: None,
                 nodes: total_nodes,
@@ -336,11 +427,32 @@ impl<'a> Solver<'a> {
                 min_score: None,
                 iffy_count: None,
                 fill: None,
+                clean: None,
             },
         }
     }
 
-    fn snapshot_solution(&self) -> Best {
+    /// Fold the just-solved fill into the running bests: overall (highest
+    /// mean) and clean (highest mean among fills whose min >= `clean_floor`).
+    fn consider(
+        &self,
+        best: &mut Option<SolvedFill>,
+        clean: &mut Option<SolvedFill>,
+        clean_floor: u8,
+    ) {
+        let s = self.snapshot_solution();
+        if clean_floor > 0
+            && s.min_score >= clean_floor
+            && clean.as_ref().is_none_or(|c| s.mean_score > c.mean_score)
+        {
+            *clean = Some(s.clone());
+        }
+        if best.as_ref().is_none_or(|b| s.mean_score > b.mean_score) {
+            *best = Some(s);
+        }
+    }
+
+    fn snapshot_solution(&self) -> SolvedFill {
         // Quality stats (mean/min/iffy) are computed over the SEARCHED entries
         // only — locked theme answers are a given, not a measure of fill skill.
         let mut total = 0u32;
@@ -366,12 +478,12 @@ impl<'a> Solver<'a> {
             fill.push((*ei, answer.clone(), *score));
         }
         let n = self.n_searchable.max(1);
-        Best {
-            mean: total as f64 / n as f64,
+        SolvedFill {
+            mean_score: total as f64 / n as f64,
             letters: self.cell_letter.clone(),
             fill,
-            min: if self.n_searchable == 0 { 100 } else { min_s },
-            iffy,
+            min_score: if self.n_searchable == 0 { 100 } else { min_s },
+            iffy_count: iffy,
         }
     }
 
@@ -396,8 +508,9 @@ impl<'a> Solver<'a> {
             self.used[l] = Bitset::zeros(self.wl.by_len[l].n.max(1));
         }
         // Locked answers present in the wordlist are marked used so the search
-        // can't reuse them elsewhere (no duplicate answers).
-        for &(len, w) in &self.locked_used {
+        // can't reuse them elsewhere (no duplicate answers); banned answers
+        // are marked the same way so they can never be assigned.
+        for &(len, w) in self.locked_used.iter().chain(self.banned.iter()) {
             self.used[len].set(w);
         }
         for cid in 0..self.p.n_cells {
@@ -676,6 +789,90 @@ DOG;40
         // The locked answer appears in the fill output.
         let fill = r.fill.unwrap();
         assert!(fill.iter().any(|(_, w, _)| w == "CAB"));
+    }
+
+    /// Two disjoint fills of the open 3x3 exist in this dict: a "dirty" one
+    /// with the top mean (76.7) that leans on WEN;50, and a clean one
+    /// (min 55, mean 67.5): CAB/ORE/TEN x COT/ARE/BEN vs PAW/IRE/TEN x
+    /// PIT/ARE/WEN. Mean polish must keep the dirty fill as the primary
+    /// result while the clean hunt surfaces the all->=55 fill alongside.
+    #[test]
+    fn tracks_best_clean_fill_alongside_mean_best() {
+        let src =
+            "CAB;80\nORE;70\nTEN;75\nCOT;60\nARE;65\nBEN;55\nPAW;90\nIRE;90\nPIT;90\nWEN;50\n";
+        let wl = Wordlist::from_str(src, 40);
+        let p = Puzzle::from_template("...\n...\n...\n");
+        let mut s = Solver::new(&p, &wl);
+        let r = s.solve(&SolveConfig {
+            time_limit_s: 1.0,
+            ..Default::default()
+        });
+        assert_eq!(r.reason, "solved");
+        assert!(
+            (r.mean_score.unwrap() - 460.0 / 6.0).abs() < 0.1,
+            "primary best is the higher-mean dirty fill, got {}",
+            r.mean_score.unwrap()
+        );
+        assert_eq!(r.min_score.unwrap(), 50, "dirty fill bottoms out at WEN;50");
+        let clean = r.clean.expect("clean hunt must find the all->=55 fill");
+        assert_eq!(clean.min_score, 55);
+        assert!((clean.mean_score - 67.5).abs() < 0.01);
+        assert_eq!(clean.iffy_count, 0);
+    }
+
+    /// With a clean floor no fill can reach (both families rely on sub-70
+    /// words), `clean` stays empty while the primary fill still solves.
+    #[test]
+    fn clean_absent_when_floor_unreachable() {
+        let src =
+            "CAB;80\nORE;70\nTEN;75\nCOT;60\nARE;65\nBEN;55\nPAW;90\nIRE;90\nPIT;90\nWEN;50\n";
+        let wl = Wordlist::from_str(src, 40);
+        let p = Puzzle::from_template("...\n...\n...\n");
+        let mut s = Solver::new(&p, &wl);
+        let r = s.solve(&SolveConfig {
+            time_limit_s: 0.5,
+            clean_floor: 70,
+            ..Default::default()
+        });
+        assert_eq!(r.reason, "solved");
+        assert!(r.clean.is_none(), "no fill has min >= 70");
+    }
+
+    /// Banning WEN kills the dirty family outright, so the only fills left
+    /// are the clean ones — and locked/unknown answers refuse to ban.
+    #[test]
+    fn ban_answer_excludes_word_and_guards_locks() {
+        let src =
+            "CAB;80\nORE;70\nTEN;75\nCOT;60\nARE;65\nBEN;55\nPAW;90\nIRE;90\nPIT;90\nWEN;50\n";
+        let wl = Wordlist::from_str(src, 40);
+        let p = Puzzle::from_template("...\n...\n...\n");
+        let mut s = Solver::new(&p, &wl);
+        assert!(!s.ban_answer("QQQ"), "unknown word can't be banned");
+        assert!(s.ban_answer("wen"), "known word bans (case-insensitive)");
+        let r = s.solve(&SolveConfig {
+            time_limit_s: 0.5,
+            ..Default::default()
+        });
+        assert_eq!(r.reason, "solved");
+        let fill = r.fill.unwrap();
+        assert!(
+            fill.iter().all(|(_, w, _)| w != "WEN"),
+            "banned word must not appear"
+        );
+        assert!(
+            (r.mean_score.unwrap() - 67.5).abs() < 0.01,
+            "only the clean family remains, got mean {}",
+            r.mean_score.unwrap()
+        );
+
+        let locks = vec![Lock {
+            row: 0,
+            col: 0,
+            dir: Dir::Across,
+            answer: "CAB".into(),
+        }];
+        let mut s = Solver::with_locks(&p, &wl, &locks).unwrap();
+        assert!(!s.ban_answer("CAB"), "locked answers are unbannable");
     }
 
     #[test]

@@ -48,7 +48,7 @@ fn parse_args() -> Result<Args, String> {
         min_score: 40,
         time_limit: 30.0,
         seed: 0,
-        tiers: vec![50, 40],
+        tiers: vec![40, 50, 55, 60],
         first: false,
         boxed: false,
         workers: 1,
@@ -110,7 +110,7 @@ fn parse_args() -> Result<Args, String> {
         }
     }
     if !got_template {
-        return Err("usage: xfill <template> [--wordlist PATH] [--min-score N] [--time SECS] [--seed N] [--tiers 50,40] [--first] [--boxed] [--workers N] [--lock ROW,COL,DIR,ANSWER ...]".into());
+        return Err("usage: xfill <template> [--wordlist PATH] [--min-score N] [--time SECS] [--seed N] [--tiers 40,50,55,60] [--first] [--boxed] [--workers N] [--lock ROW,COL,DIR,ANSWER ...]".into());
     }
     Ok(a)
 }
@@ -204,7 +204,7 @@ fn main() -> ExitCode {
             let mut total_restarts = 0u64;
             let mut best: Option<SolveResult> = None;
             for h in handles {
-                let res = h.join().unwrap();
+                let mut res = h.join().unwrap();
                 total_nodes += res.nodes;
                 total_restarts += res.restarts;
                 let take = match &best {
@@ -215,8 +215,26 @@ fn main() -> ExitCode {
                                 .is_none_or(|bm| res.mean_score.is_some_and(|m| m > bm))
                     }
                 };
+                // The best clean alternative may live in a losing worker —
+                // merge it so the combined result carries both maxima.
                 if take {
+                    if let Some(bc) = best.take().and_then(|b| b.clean) {
+                        if res
+                            .clean
+                            .as_ref()
+                            .is_none_or(|rc| bc.mean_score > rc.mean_score)
+                        {
+                            res.clean = Some(bc);
+                        }
+                    }
                     best = Some(res);
+                } else if let (Some(rc), Some(b)) = (res.clean, best.as_mut()) {
+                    if b.clean
+                        .as_ref()
+                        .is_none_or(|bc| rc.mean_score > bc.mean_score)
+                    {
+                        b.clean = Some(rc);
+                    }
                 }
             }
             let mut r = best.unwrap();
@@ -248,6 +266,12 @@ fn main() -> ExitCode {
             iffy,
             fill.len()
         );
+        if let Some(c) = r.clean.as_ref() {
+            println!(
+                "clean alternative (min {} >= floor {}): mean {:.1}",
+                c.min_score, cfg.clean_floor, c.mean_score
+            );
+        }
         let mut weak: Vec<_> = fill.clone();
         weak.sort_by_key(|(_, _, s)| *s);
         println!("\nweakest entries:");
