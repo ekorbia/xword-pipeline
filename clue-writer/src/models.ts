@@ -2,8 +2,12 @@
 // each pipeline step uses, and why.
 //
 // Step-by-step reasoning:
-//   - clue / revise: wordplay sophistication IS the product (especially the
-//     Hard/Expert tiers); Opus earns its cost here.
+//   - clue / revise: wordplay sophistication IS the product. A blind eval
+//     (easy/medium/expert grids, identical prompt) put Sonnet 5 at parity with
+//     Opus — ahead on the harder grids, a shade behind on easy — at ~0.6x the
+//     cost and lower latency, so Sonnet is the default; QA (below) stays on
+//     Opus as the accuracy net. Haiku was NOT viable here: it produced
+//     plausible-but-wrong clues (NERVES as "composure", ELKSTEAK as "venison").
 //   - qa: the publication gate. False negatives directly degrade puzzles, and
 //     its token volume is small — downgrading saves pennies and risks a lot.
 //   - themeIdea: was Sonnet 4.6 briefly (cheaper, quality fine) but its long
@@ -17,7 +21,7 @@
 //     world knowledge, not deep reasoning, and volume makes cost matter.
 //     Sonnet is the sweet spot; bump to Opus via --model for a quality pass.
 export const MODELS = {
-  clue: "claude-opus-4-7",
+  clue: "claude-sonnet-5",
   qa: "claude-opus-4-7",
   themeIdea: "claude-opus-4-8",
   explain: "claude-haiku-4-5",
