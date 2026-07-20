@@ -3,6 +3,11 @@
 ## [0.1.0]
 
 ### Added
+- **Post-solve region repair (rip-and-refill).** When the search phases end
+  with an almost-clean best fill — 1–4 searched entries below the clean
+  floor — and no better clean alternative, the solver now locks every other
+  entry in place, rips the weak entries plus their crossings, and re-solves
+  just that region with clean-floor words on a 15% time slice.
 - **Dup-retry: ban-and-refill instead of discard.** When a gate-passing fill
   hits the root-duplicate gate, the screeners now ban the more disposable
   member of the pair (lower score first, shorter on ties; locked seed/theme

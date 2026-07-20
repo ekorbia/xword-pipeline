@@ -46,7 +46,20 @@ pub struct SolveConfig {
     /// clean fill (by mean) is tracked and returned alongside the overall
     /// best so callers can prefer it when it passes their gates. 0 disables.
     pub clean_floor: u8,
+    /// Post-solve region repair: if the search phases end with no clean fill
+    /// (or only a worse-than-best one) and the best fill has 1..=this many
+    /// searched entries below `clean_floor`, rip those entries plus their
+    /// crossings out, lock the rest of the grid, and re-solve just that
+    /// region at the clean floor on a small budget. Beyond ~4 the region
+    /// approaches a whole-grid re-solve (each weak word drags 3-5 crossings
+    /// with it), which the clean hunt already attempted. 0 disables.
+    pub repair_max_weak: usize,
 }
+
+/// Fraction of `time_limit_s` granted to the post-solve repair pass. Region
+/// re-solves are tiny (a handful of entries, most letters pinned), so they
+/// either succeed almost immediately or are infeasible.
+const REPAIR_TIME_FRAC: f64 = 0.15;
 
 impl Default for SolveConfig {
     fn default() -> Self {
@@ -59,6 +72,7 @@ impl Default for SolveConfig {
             cand_cap: 400,
             stop_on_first: false,
             clean_floor: 55,
+            repair_max_weak: 4,
         }
     }
 }
@@ -394,6 +408,26 @@ impl<'a> Solver<'a> {
             }
         }
 
+        // Phase 4 — repair: the clean hunt re-searches the WHOLE grid from
+        // scratch, which on large grids often times out even when the best
+        // fill is one bad corner away from clean. Rip the weak entries plus
+        // their crossings out of the best fill, lock the rest, and re-solve
+        // just that region at the clean floor — a tiny search that converts
+        // almost-clean fills into clean ones. Skipped under stop_on_first
+        // (those callers want the first answer, not polish).
+        if !cfg.stop_on_first && cfg.repair_max_weak > 0 && cfg.clean_floor > 0 {
+            if let Some(b) = &best {
+                let worth = clean.as_ref().is_none_or(|c| c.mean_score < b.mean_score);
+                if worth {
+                    if let Some(rep) = self.repair(b, cfg) {
+                        if clean.as_ref().is_none_or(|c| rep.mean_score > c.mean_score) {
+                            clean = Some(rep);
+                        }
+                    }
+                }
+            }
+        }
+
         let elapsed = t0.elapsed().as_secs_f64();
         match best {
             Some(b) => {
@@ -485,6 +519,119 @@ impl<'a> Solver<'a> {
             min_score: if self.n_searchable == 0 { 100 } else { min_s },
             iffy_count: iffy,
         }
+    }
+
+    /// Rip the weak entries (searched, score < `clean_floor`) plus their
+    /// crossing entries out of `b`, lock every other entry to its current
+    /// answer, and re-solve just that region with clean-floor words on a
+    /// small budget (an inner solver; its nodes aren't added to the outer
+    /// totals). On success the merged fill has min >= `clean_floor` by
+    /// construction: every kept searched entry was already at/above the
+    /// floor, and region words are drawn from at/above it. Locked theme
+    /// answers are never ripped; outer bans carry over so a banned duplicate
+    /// can't sneak back in. Returns None when there is nothing to repair,
+    /// the weak set exceeds `repair_max_weak`, or the region doesn't
+    /// re-solve in its slice.
+    fn repair(&self, b: &SolvedFill, cfg: &SolveConfig) -> Option<SolvedFill> {
+        let n = self.p.entries.len();
+        let mut weak: Vec<usize> = Vec::new();
+        for (ei, _ans, sc) in &b.fill {
+            if !self.is_locked[*ei] && *sc < cfg.clean_floor {
+                weak.push(*ei);
+            }
+        }
+        if weak.is_empty() || weak.len() > cfg.repair_max_weak {
+            return None;
+        }
+
+        // Region: the weak entries and every searched entry crossing one.
+        let mut in_region = vec![false; n];
+        for &ei in &weak {
+            in_region[ei] = true;
+            for &(_, other, _) in &self.crossings[ei] {
+                if !self.is_locked[other] {
+                    in_region[other] = true;
+                }
+            }
+        }
+
+        // Everything outside the region — kept searched entries and original
+        // theme locks alike — becomes a lock for the inner solver.
+        let mut answer_of: Vec<Option<&String>> = vec![None; n];
+        for (ei, ans, _sc) in &b.fill {
+            answer_of[*ei] = Some(ans);
+        }
+        let mut locks: Vec<Lock> = Vec::with_capacity(n);
+        for (ei, region) in in_region.iter().enumerate() {
+            if *region {
+                continue;
+            }
+            let e = &self.p.entries[ei];
+            locks.push(Lock {
+                row: e.row,
+                col: e.col,
+                dir: e.dir,
+                answer: answer_of[ei]?.clone(),
+            });
+        }
+
+        let mut inner = Solver::with_locks(self.p, self.wl, &locks).ok()?;
+        inner.banned = self.banned.clone();
+        let r = inner.solve(&SolveConfig {
+            time_limit_s: (cfg.time_limit_s * REPAIR_TIME_FRAC).max(0.05),
+            tiers: vec![cfg.clean_floor],
+            seed: cfg.seed.wrapping_add(0x9E37_79B9),
+            initial_budget: cfg.initial_budget,
+            max_budget: cfg.max_budget,
+            cand_cap: cfg.cand_cap,
+            stop_on_first: true, // any region solve is clean by construction
+            clean_floor: cfg.clean_floor,
+            repair_max_weak: 0, // no recursive repair
+        });
+        let letters = r.letters?;
+        let inner_fill = r.fill?;
+
+        // Merge back into the OUTER solver's stats convention: quality over
+        // outer-searched entries only, locked theme answers appended. Kept
+        // entries come back through the inner solver's lock reporting with
+        // their real wordlist scores, so the merge reads uniformly.
+        let mut by_entry: Vec<Option<(String, u8)>> = vec![None; n];
+        for (ei, ans, sc) in inner_fill {
+            by_entry[ei] = Some((ans, sc));
+        }
+        let mut total = 0u32;
+        let mut min_s = 100u8;
+        let mut iffy = 0usize;
+        let mut fill = Vec::with_capacity(n);
+        for (ei, slot) in by_entry.iter_mut().enumerate() {
+            if self.is_locked[ei] {
+                continue;
+            }
+            let (ans, sc) = slot.take()?;
+            total += sc as u32;
+            min_s = min_s.min(sc);
+            if sc < 50 {
+                iffy += 1;
+            }
+            fill.push((ei, ans, sc));
+        }
+        for (ei, answer, score) in &self.locked_out {
+            fill.push((*ei, answer.clone(), *score));
+        }
+        debug_assert!(
+            self.n_searchable == 0 || min_s >= cfg.clean_floor,
+            "repair must produce a clean fill (min {} < floor {})",
+            min_s,
+            cfg.clean_floor
+        );
+        let ns = self.n_searchable.max(1);
+        Some(SolvedFill {
+            letters,
+            mean_score: total as f64 / ns as f64,
+            min_score: if self.n_searchable == 0 { 100 } else { min_s },
+            iffy_count: iffy,
+            fill,
+        })
     }
 
     /// One bounded attempt at a given quality floor. Resets state first.
@@ -873,6 +1020,153 @@ DOG;40
         }];
         let mut s = Solver::with_locks(&p, &wl, &locks).unwrap();
         assert!(!s.ban_answer("CAB"), "locked answers are unbannable");
+    }
+
+    /// Repair dict: the dirty 3x3 (CAB/ORE/TEN x COT/ARE/BEN) leans on
+    /// ORE;50. Ripping ORE plus its crossings (all three downs) with CAB/TEN
+    /// kept leaves exactly one clean region solve: UXU;60 with CUT/AXE/BUN —
+    /// the only >=55 middle row compatible with the pinned C?T/A?E/B?N.
+    fn repair_dict(down_alt_score: u8) -> Wordlist {
+        let src = format!(
+            "CAB;80\nTEN;75\nORE;50\nUXU;60\nCOT;90\nARE;90\nBEN;90\nCUT;{s}\nAXE;{s}\nBUN;{s}\n",
+            s = down_alt_score
+        );
+        Wordlist::from_str(&src, 40)
+    }
+
+    /// The dirty best fill of the open 3x3 over `repair_dict`, hand-built so
+    /// the repair mechanism can be exercised deterministically.
+    fn dirty_fill(p: &Puzzle) -> SolvedFill {
+        let e = |r, c, d| p.find_entry(r, c, d).unwrap();
+        let fill = vec![
+            (e(0, 0, Dir::Across), "CAB".to_string(), 80u8),
+            (e(1, 0, Dir::Across), "ORE".to_string(), 50),
+            (e(2, 0, Dir::Across), "TEN".to_string(), 75),
+            (e(0, 0, Dir::Down), "COT".to_string(), 90),
+            (e(0, 1, Dir::Down), "ARE".to_string(), 90),
+            (e(0, 2, Dir::Down), "BEN".to_string(), 90),
+        ];
+        SolvedFill {
+            letters: Vec::new(), // repair reads answers from `fill`, not letters
+            mean_score: 475.0 / 6.0,
+            min_score: 50,
+            iffy_count: 0,
+            fill,
+        }
+    }
+
+    /// Direct mechanism test: ripping the weak entry + crossings and
+    /// re-solving at the clean floor produces the unique merged clean fill.
+    #[test]
+    fn repair_converts_weak_fill_to_clean() {
+        let wl = repair_dict(90);
+        let p = Puzzle::from_template("...\n...\n...\n");
+        let s = Solver::new(&p, &wl);
+        let b = dirty_fill(&p);
+        let cfg = SolveConfig {
+            time_limit_s: 2.0,
+            ..Default::default()
+        };
+        let rep = s
+            .repair(&b, &cfg)
+            .expect("region must re-solve at floor 55");
+        assert_eq!(rep.min_score, 60, "weakest repaired entry is UXU;60");
+        assert!(
+            (rep.mean_score - 485.0 / 6.0).abs() < 0.01,
+            "merged mean over all six entries, got {}",
+            rep.mean_score
+        );
+        assert_eq!(rep.iffy_count, 0);
+        let words: Vec<&str> = rep.fill.iter().map(|(_, w, _)| w.as_str()).collect();
+        for w in ["CAB", "TEN", "UXU", "CUT", "AXE", "BUN"] {
+            assert!(words.contains(&w), "repaired fill must contain {w}");
+        }
+        assert!(!words.contains(&"ORE"), "the weak word must be gone");
+        // middle row letters rewritten to U X U
+        assert_eq!(rep.letters[3], Some(20));
+        assert_eq!(rep.letters[4], Some(23));
+        assert_eq!(rep.letters[5], Some(20));
+
+        // Guard: repair_max_weak = 0 disables.
+        let off = SolveConfig {
+            repair_max_weak: 0,
+            ..cfg
+        };
+        assert!(s.repair(&b, &off).is_none());
+    }
+
+    /// Theme locks are never ripped, keep their verbatim answer, and stay
+    /// excluded from the merged quality stats.
+    #[test]
+    fn repair_preserves_theme_locks_and_stats() {
+        let wl = repair_dict(90);
+        let p = Puzzle::from_template("...\n...\n...\n");
+        let locks = vec![Lock {
+            row: 0,
+            col: 0,
+            dir: Dir::Across,
+            answer: "CAB".into(),
+        }];
+        let s = Solver::with_locks(&p, &wl, &locks).unwrap();
+        let e = |r, c, d| p.find_entry(r, c, d).unwrap();
+        let b = SolvedFill {
+            letters: Vec::new(),
+            mean_score: 395.0 / 5.0,
+            min_score: 50,
+            iffy_count: 0,
+            fill: vec![
+                (e(1, 0, Dir::Across), "ORE".to_string(), 50),
+                (e(2, 0, Dir::Across), "TEN".to_string(), 75),
+                (e(0, 0, Dir::Down), "COT".to_string(), 90),
+                (e(0, 1, Dir::Down), "ARE".to_string(), 90),
+                (e(0, 2, Dir::Down), "BEN".to_string(), 90),
+                (e(0, 0, Dir::Across), "CAB".to_string(), 80), // locked, appended
+            ],
+        };
+        let cfg = SolveConfig {
+            time_limit_s: 2.0,
+            ..Default::default()
+        };
+        let rep = s.repair(&b, &cfg).expect("region must re-solve");
+        assert_eq!(rep.min_score, 60);
+        assert!(
+            (rep.mean_score - 405.0 / 5.0).abs() < 0.01,
+            "stats cover the five searched entries only, got {}",
+            rep.mean_score
+        );
+        assert!(
+            rep.fill.iter().any(|(_, w, _)| w == "CAB"),
+            "locked theme answer stays in the fill output"
+        );
+    }
+
+    /// End-to-end: when the clean hunt can't run (no >=55 tier configured)
+    /// the repair phase still surfaces the clean alternative, while the
+    /// higher-mean dirty fill stays the primary result.
+    #[test]
+    fn solve_repair_fills_clean_slot() {
+        let wl = repair_dict(60); // low-scored alt downs: dirty keeps the mean lead
+        let p = Puzzle::from_template("...\n...\n...\n");
+        let mut s = Solver::new(&p, &wl);
+        let r = s.solve(&SolveConfig {
+            time_limit_s: 0.5,
+            tiers: vec![40],
+            ..Default::default()
+        });
+        assert_eq!(r.reason, "solved");
+        assert!(
+            (r.mean_score.unwrap() - 475.0 / 6.0).abs() < 0.1,
+            "primary best stays the dirty fill, got {}",
+            r.mean_score.unwrap()
+        );
+        assert_eq!(r.min_score.unwrap(), 50);
+        let clean = r.clean.expect("repair must surface the clean alternative");
+        assert_eq!(clean.min_score, 60);
+        assert!(
+            (clean.mean_score - 395.0 / 6.0).abs() < 0.05,
+            "clean fill is the UXU variant, got {}",
+            clean.mean_score
+        );
     }
 
     #[test]
