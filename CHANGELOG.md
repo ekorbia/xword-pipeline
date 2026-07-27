@@ -3,6 +3,8 @@
 ## [0.1.0]
 
 ### Added
+- **Word-count floor at template generation (full-size themeless).** Candidate
+  15×15 templates with fewer answers than a floor are rejected before filling.
 - **Post-solve region repair (rip-and-refill).** When the search phases end
   with an almost-clean best fill — 1–4 searched entries below the clean
   floor — and no better clean alternative, the solver now locks every other

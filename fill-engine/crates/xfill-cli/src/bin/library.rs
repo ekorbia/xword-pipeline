@@ -60,6 +60,15 @@ fn main() {
     let max_iffy: usize = arg("--max-iffy", 3);
     let top: usize = arg("--top", 25);
     let seed: u64 = arg("--seed", 1);
+    // Reject candidate templates below this word count at generation time —
+    // higher word counts fill clean far more reliably (see gen::word_floor).
+    // -1 (default) = auto per size; 0 = off; explicit N = that floor.
+    let min_words_arg: i64 = arg("--min-words", -1);
+    let min_words: usize = if min_words_arg >= 0 {
+        min_words_arg as usize
+    } else {
+        gen::word_floor(size)
+    };
     let out: String = arg("--out", "../out/libraries/grid-library.json".to_string());
     let workers: usize = arg(
         "--workers",
@@ -79,14 +88,25 @@ fn main() {
     // spinning forever (generate() returns None when it can't satisfy the spec).
     let mut tries = 0usize;
     let max_tries = candidates.saturating_mul(200).max(20_000);
+    let mut eff_min_words = min_words;
     while jobs.len() < candidates && tries < max_tries {
         tries += 1;
+        // Relax the word floor once if it's starving generation (an open,
+        // low-block build): it improves fill quality but must never hard-fail.
+        if eff_min_words > 0 && tries * 5 >= max_tries * 3 {
+            eprintln!(
+                "  word floor {eff_min_words} yielded only {}/{candidates} templates; relaxing",
+                jobs.len()
+            );
+            eff_min_words = 0;
+        }
         let jseed = rng.next_u64();
         let b = gen::jittered_blocks(blocks, block_jitter, &mut rng);
         let Some(tpl) = gen::generate(size, b, &mut rng, 4000) else {
             continue;
         };
-        if Puzzle::from_template(&tpl).orphan_cells() > 0 {
+        let p = Puzzle::from_template(&tpl);
+        if p.orphan_cells() > 0 || p.entries.len() < eff_min_words {
             continue;
         }
         jobs.push((tpl, jseed));
@@ -99,8 +119,13 @@ fn main() {
         std::process::exit(1);
     }
     eprintln!(
-        "generated {} candidate {size}x{size} grids; filling with {workers} workers...",
-        jobs.len()
+        "generated {} candidate {size}x{size} grids{}; filling with {workers} workers...",
+        jobs.len(),
+        if min_words > 0 {
+            format!(" (word floor {min_words})")
+        } else {
+            String::new()
+        }
     );
 
     // Phase 2: parallel fill, keep only clean fills. Workers stop early once

@@ -498,6 +498,24 @@ pub fn jittered_blocks(base: usize, jitter: usize, rng: &mut Rng) -> usize {
     base + (rng.next_u64() as usize) % (jitter + 1)
 }
 
+/// Calibrated word-count floor for themeless candidate templates. At a fixed
+/// block count the block ARRANGEMENT still swings the word count widely, and
+/// word count is a near-step-function predictor of clean fillability: a
+/// template study (1000 patterns x 8 fills, 15x15 @ 38 blocks) found shapes
+/// with <=68 words almost never fill clean (~1%/fill) while >=72-word shapes
+/// fill clean 45-82% of the time — so rejecting sub-floor templates at
+/// generation time roughly triples the clean-keeper rate for free. Minis and
+/// midis already fill clean regardless of shape, so they get NO floor. Callers
+/// apply this at generation and should relax it if it ever starves generation
+/// (a very open, low-block pinned build) — it must never hard-fail a run.
+pub fn word_floor(size: usize) -> usize {
+    if size >= 13 {
+        72
+    } else {
+        0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
