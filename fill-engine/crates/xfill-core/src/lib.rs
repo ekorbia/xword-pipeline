@@ -5,6 +5,7 @@
 //! - [`grid`]: 2D template → geometry-agnostic [`grid::Puzzle`]
 //! - [`solver`]: M1 DFS solver (MRV + score order)
 
+pub mod bank;
 pub mod bitset;
 pub mod dup;
 pub mod gen;

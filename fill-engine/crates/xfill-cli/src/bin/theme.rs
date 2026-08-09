@@ -170,7 +170,7 @@ fn main() {
                     .collect();
                 let mut cfg = SolveConfig {
                     time_limit_s: time,
-                    tiers: vec![40, 50, 55, 60],
+                    tiers: vec![40, 50, 55, 60, 70],
                     seed: *jseed,
                     ..Default::default()
                 };

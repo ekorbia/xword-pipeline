@@ -21,3 +21,6 @@ fill-engine/data/README.md
 fill-engine/data/xd/
 fill-engine/data/rescores-local.txt
 fill-engine/data/stw/
+fill-engine/data/grades-queue.txt
+fill-engine/data/grades.txt
+fill-engine/data/tpl-bank-15.txt

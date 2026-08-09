@@ -22,6 +22,9 @@ pub struct LibGrid {
     pub mean: f64,
     pub min: u8,
     pub iffy: usize,
+    /// Searched entries under the solver's weak bar (see
+    /// `SolveConfig::weak_bar`) — the gluey tail an editor counts.
+    pub weak: usize,
     pub themed: bool,
     pub template: Vec<String>,
     pub fill: Vec<String>,
@@ -36,12 +39,13 @@ pub fn build_lib_grid(p: &Puzzle, r: &SolveResult, theme_ids: &HashSet<usize>) -
         (Some(m), Some(mn), Some(i)) => (m, mn, i),
         _ => return None,
     };
+    let weak = r.weak_count.unwrap_or(0);
     let (letters, fill) = match (r.letters.as_deref(), r.fill.as_ref()) {
         (Some(l), Some(f)) => (l, f),
         _ => return None,
     };
     Some(build_from_parts(
-        p, letters, mean, min, iffy, fill, theme_ids,
+        p, letters, mean, min, iffy, weak, fill, theme_ids,
     ))
 }
 
@@ -54,17 +58,20 @@ pub fn build_lib_grid_from(p: &Puzzle, f: &SolvedFill, theme_ids: &HashSet<usize
         f.mean_score,
         f.min_score,
         f.iffy_count,
+        f.weak_count,
         &f.fill,
         theme_ids,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_from_parts(
     p: &Puzzle,
     letters: &[Option<u8>],
     mean: f64,
     min: u8,
     iffy: usize,
+    weak: usize,
     fill: &[(usize, String, u8)],
     theme_ids: &HashSet<usize>,
 ) -> LibGrid {
@@ -91,6 +98,7 @@ fn build_from_parts(
         mean,
         min,
         iffy,
+        weak,
         themed: !theme_ids.is_empty(),
         template: p.render(None).lines().map(str::to_string).collect(),
         fill: p
@@ -152,6 +160,7 @@ pub fn write_json(
         s.push_str(&format!("      \"mean_score\": {:.2},\n", g.mean));
         s.push_str(&format!("      \"min_score\": {},\n", g.min));
         s.push_str(&format!("      \"iffy\": {},\n", g.iffy));
+        s.push_str(&format!("      \"weak\": {},\n", g.weak));
         s.push_str(&format!(
             "      \"template\": [{}],\n",
             json_arr(&g.template)
@@ -204,6 +213,7 @@ mod tests {
             mean: 0.0,
             min: 0,
             iffy: 0,
+            weak: 0,
             themed: false,
             template: Vec::new(),
             fill: Vec::new(),

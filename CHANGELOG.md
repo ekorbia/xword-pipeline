@@ -3,6 +3,16 @@
 ## [0.1.0]
 
 ### Added
+- **Template bank.** The `tpl_bank` bin probes random word-floor-passing
+  15×15s and persists the clean-proven minority (kept local); generation
+  draws a per-preset fraction from it ("Bank %", Publication 70) — ~1.9×
+  publication keepers and a fully weak-free grid in nearly every banked run.
+- **Weak-entry objective.** Entries under a weak bar (default 70) are counted
+  per fill, the quality ladder gains a 70 tier, clean-fill selection and
+  keeper ordering prefer fewest-weak-then-mean, and screeners can gate on it
+  (`--max-weak` / per-preset "Max weak"). 9×9 top-20 keepers: ~2.4 weak
+  entries → 0.0; 15×15 best-per-run: 16–18 → 0–8, incl. the first fully
+  weak-free full-size grid.
 - **Word-count floor at template generation (full-size themeless).** Candidate
   15×15 templates with fewer answers than a floor are rejected before filling.
 - **Post-solve region repair (rip-and-refill).** When the search phases end

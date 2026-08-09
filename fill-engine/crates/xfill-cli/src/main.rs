@@ -48,7 +48,7 @@ fn parse_args() -> Result<Args, String> {
         min_score: 40,
         time_limit: 30.0,
         seed: 0,
-        tiers: vec![40, 50, 55, 60],
+        tiers: vec![40, 50, 55, 60, 70],
         first: false,
         boxed: false,
         workers: 1,
@@ -110,7 +110,7 @@ fn parse_args() -> Result<Args, String> {
         }
     }
     if !got_template {
-        return Err("usage: xfill <template> [--wordlist PATH] [--min-score N] [--time SECS] [--seed N] [--tiers 40,50,55,60] [--first] [--boxed] [--workers N] [--lock ROW,COL,DIR,ANSWER ...]".into());
+        return Err("usage: xfill <template> [--wordlist PATH] [--min-score N] [--time SECS] [--seed N] [--tiers 40,50,55,60,70] [--first] [--boxed] [--workers N] [--lock ROW,COL,DIR,ANSWER ...]".into());
     }
     Ok(a)
 }

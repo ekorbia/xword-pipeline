@@ -6,7 +6,8 @@
 //!
 //! Usage: library [--wordlist PATH] [--size N] [--blocks N] [--block-jitter N]
 //!                [--candidates N] [--time SECS] [--keep-mean F] [--max-iffy N]
-//!                [--top N] [--seed N] [--workers N] [--out PATH]
+//!                [--weak-bar N] [--max-weak N] [--top N] [--seed N]
+//!                [--bank PATH] [--bank-fraction F] [--workers N] [--out PATH]
 //!
 //! `--size` is the grid dimension (default 15; e.g. 5 or 10 for minis). The
 //! default block count scales with the grid area when `--blocks` is omitted.
@@ -69,7 +70,23 @@ fn main() {
     } else {
         gen::word_floor(size)
     };
+    // Entries scoring below the weak bar are the gluey tail an editor counts
+    // (see SolveConfig::weak_bar). -1 = pipeline default; 0 = off. Keepers are
+    // ordered fewest-weak-first, and --max-weak (default: no gate) drops
+    // fills with a longer tail.
+    let weak_bar_arg: i64 = arg("--weak-bar", -1);
+    let weak_bar: u8 = if weak_bar_arg >= 0 {
+        weak_bar_arg as u8
+    } else {
+        xfill_core::solver::DEFAULT_WEAK_BAR
+    };
+    let max_weak: usize = arg("--max-weak", usize::MAX);
     let out: String = arg("--out", "../out/libraries/grid-library.json".to_string());
+    // Template bank: draw this fraction of candidates from clean-proven
+    // shapes (see xfill_core::bank; build with the tpl-bank bin). -1 = auto
+    // (`bank::default_bank_fraction`: 0.7 full-size, 0 below); 0 = fresh only.
+    let bank_path: String = arg("--bank", format!("data/tpl-bank-{size}.txt"));
+    let bank_fraction_arg: f64 = arg("--bank-fraction", -1.0);
     let workers: usize = arg(
         "--workers",
         std::thread::available_parallelism()
@@ -82,8 +99,30 @@ fn main() {
     eprintln!("wordlist loaded in {:.1}s", t.elapsed().as_secs_f64());
 
     // Phase 1: generate templates + fixed per-grid seeds (deterministic).
+    // Banked (proven) templates first — under the early stop, publication
+    // runs spend their budget on shapes that can actually clean-fill.
     let mut rng = Rng::new(seed);
     let mut jobs: Vec<(String, u64)> = Vec::with_capacity(candidates);
+    let bank_templates = xfill_core::bank::parse_bank(
+        &std::fs::read_to_string(&bank_path).unwrap_or_default(),
+        size,
+    );
+    let bank_fraction = if bank_fraction_arg >= 0.0 {
+        bank_fraction_arg.min(1.0)
+    } else {
+        xfill_core::bank::default_bank_fraction(size)
+    };
+    let n_banked = ((candidates as f64) * bank_fraction).round() as usize;
+    let mut banked_used = 0usize;
+    for tpl in xfill_core::bank::sample(&bank_templates, n_banked, &mut rng) {
+        let p = Puzzle::from_template(&tpl);
+        if p.orphan_cells() > 0 || p.entries.len() < min_words {
+            continue; // bank line predates a stricter floor — skip, don't trust
+        }
+        jobs.push((tpl, rng.next_u64()));
+        banked_used += 1;
+    }
+    let banked_set: HashSet<String> = jobs.iter().map(|(t, _)| t.clone()).collect();
     // Bound the search so an infeasible size/blocks combo fails fast instead of
     // spinning forever (generate() returns None when it can't satisfy the spec).
     let mut tries = 0usize;
@@ -109,6 +148,9 @@ fn main() {
         if p.orphan_cells() > 0 || p.entries.len() < eff_min_words {
             continue;
         }
+        if banked_set.contains(&tpl) {
+            continue; // don't double-fill a shape the bank already queued
+        }
         jobs.push((tpl, jseed));
     }
     if jobs.is_empty() {
@@ -119,8 +161,13 @@ fn main() {
         std::process::exit(1);
     }
     eprintln!(
-        "generated {} candidate {size}x{size} grids{}; filling with {workers} workers...",
+        "generated {} candidate {size}x{size} grids{}{}; filling with {workers} workers...",
         jobs.len(),
+        if banked_used > 0 {
+            format!(" ({banked_used} banked)")
+        } else {
+            String::new()
+        },
         if min_words > 0 {
             format!(" (word floor {min_words})")
         } else {
@@ -158,8 +205,9 @@ fn main() {
                 let mut solver = Solver::new(&p, &wl);
                 let mut cfg = SolveConfig {
                     time_limit_s: time,
-                    tiers: vec![40, 50, 55, 60],
+                    tiers: vec![40, 50, 55, 60, 70],
                     seed: *jseed,
+                    weak_bar,
                     ..Default::default()
                 };
                 // Solve → gate → dup-check, retrying up to twice with the
@@ -178,10 +226,11 @@ fn main() {
                     // Prefer the clean fill (nothing below the solver's clean
                     // floor) whenever it passes the keep gates on its own —
                     // same yield, strictly fewer weak entries.
-                    let clean_pick = r
-                        .clean
-                        .as_ref()
-                        .filter(|c| c.mean_score >= keep_mean && c.iffy_count <= max_iffy);
+                    let clean_pick = r.clean.as_ref().filter(|c| {
+                        c.mean_score >= keep_mean
+                            && c.iffy_count <= max_iffy
+                            && c.weak_count <= max_weak
+                    });
                     let g = match clean_pick {
                         Some(c) => Some(xfill_core::library::build_lib_grid_from(&p, c, &no_theme)),
                         None => build_lib_grid(&p, &r, &no_theme),
@@ -192,7 +241,7 @@ fn main() {
                     if bans == 0 {
                         filled.fetch_add(1, Ordering::Relaxed);
                     }
-                    if g.mean < keep_mean || g.iffy > max_iffy {
+                    if g.mean < keep_mean || g.iffy > max_iffy || g.weak > max_weak {
                         break None;
                     }
                     // Root-duplicate gate (TEN/TENTH, EVEN/UNEVENLY, shared
@@ -240,7 +289,13 @@ fn main() {
     let mut kept = kept.into_inner().unwrap();
     let mut seen = HashSet::new();
     kept.retain(|g| seen.insert(g.template.join("\n")));
-    kept.sort_by(|a, b| b.mean.partial_cmp(&a.mean).unwrap());
+    // Fewest weak entries first (what an editor screens for), mean breaks ties
+    // — matches the solver's own clean-track ordering.
+    kept.sort_by(|a, b| {
+        a.weak
+            .cmp(&b.weak)
+            .then(b.mean.partial_cmp(&a.mean).unwrap())
+    });
     kept.truncate(top);
 
     let filled_n = filled.load(Ordering::Relaxed);
@@ -272,8 +327,8 @@ fn main() {
     eprintln!("wrote {} grids to {out}", kept.len());
     if let Some(best) = kept.first() {
         eprintln!(
-            "best: mean={:.1} iffy={} blocks={}",
-            best.mean, best.iffy, best.blocks
+            "best: mean={:.1} iffy={} weak={} (bar {weak_bar}) blocks={}",
+            best.mean, best.iffy, best.weak, best.blocks
         );
     }
 }

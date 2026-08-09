@@ -54,7 +54,21 @@ pub struct SolveConfig {
     /// approaches a whole-grid re-solve (each weak word drags 3-5 crossings
     /// with it), which the clean hunt already attempted. 0 disables.
     pub repair_max_weak: usize,
+    /// Entries scoring below this are WEAK — real words, above the clean
+    /// floor, but the gluey tail an editor counts (NYT tolerates a few per
+    /// grid). Distinct from `clean_floor` (hard admissibility) and iffy
+    /// (<50): the weak bar measures the tail that mean-score hides. Fills
+    /// track `weak_count`, and the clean track prefers FEWER weak entries
+    /// before higher mean. 0 disables (count is always 0). Callers surface
+    /// this as a tunable; `DEFAULT_WEAK_BAR` is the pipeline default.
+    pub weak_bar: u8,
 }
+
+/// Default weak bar: 70 sits above the capped usage floors (<=55) and the
+/// upstream list's gluey 60s, below its ordinary-word 80-90 bulk. Measured on
+/// publication keepers 2026-08: the perceived-glue tail (EEE/ENE/STS class)
+/// scored 60-65, ordinary fill 80+.
+pub const DEFAULT_WEAK_BAR: u8 = 70;
 
 /// Fraction of `time_limit_s` granted to the post-solve repair pass. Region
 /// re-solves are tiny (a handful of entries, most letters pinned), so they
@@ -65,7 +79,9 @@ impl Default for SolveConfig {
     fn default() -> Self {
         SolveConfig {
             time_limit_s: 30.0,
-            tiers: vec![40, 50, 55, 60],
+            // 70 caps the ladder so the search actively hunts fills with NO
+            // weak (sub-70) entries before settling for merely-clean ones.
+            tiers: vec![40, 50, 55, 60, 70],
             seed: 0,
             initial_budget: 2_000,
             max_budget: 400_000,
@@ -73,6 +89,7 @@ impl Default for SolveConfig {
             stop_on_first: false,
             clean_floor: 55,
             repair_max_weak: 4,
+            weak_bar: DEFAULT_WEAK_BAR,
         }
     }
 }
@@ -86,6 +103,9 @@ pub struct SolvedFill {
     pub mean_score: f64,
     pub min_score: u8,
     pub iffy_count: usize,
+    /// Searched entries scoring below `SolveConfig::weak_bar` — the gluey
+    /// tail an editor would count. 0 when the bar is disabled.
+    pub weak_count: usize,
     pub fill: Vec<(usize, String, u8)>,
 }
 
@@ -98,9 +118,12 @@ pub struct SolveResult {
     pub mean_score: Option<f64>,
     pub min_score: Option<u8>,
     pub iffy_count: Option<usize>,
+    /// Sub-`weak_bar` entry count of the primary fill (see `SolvedFill`).
+    pub weak_count: Option<usize>,
     pub fill: Option<Vec<(usize, String, u8)>>,
-    /// Best fill (by mean) with no searched entry below `cfg.clean_floor`,
-    /// when one was found. May describe the same fill as the primary fields.
+    /// Best fill with no searched entry below `cfg.clean_floor`, when one
+    /// was found — "best" = fewest weak (sub-`weak_bar`) entries, then
+    /// highest mean. May describe the same fill as the primary fields.
     /// Callers should prefer it whenever it passes their keep gates on its
     /// own — same yield, strictly fewer weak entries.
     pub clean: Option<SolvedFill>,
@@ -340,7 +363,7 @@ impl<'a> Solver<'a> {
             let outcome = self.attempt(lowest, budget, seed, global_deadline);
             total_nodes += self.nodes;
             if outcome == Outcome::Solved {
-                self.consider(&mut best, &mut clean, cfg.clean_floor);
+                self.consider(&mut best, &mut clean, cfg);
             }
             budget = (budget * 2).min(cfg.max_budget);
         }
@@ -372,7 +395,7 @@ impl<'a> Solver<'a> {
                         let outcome = self.attempt(floor, budget, seed, tier_deadline);
                         total_nodes += self.nodes;
                         if outcome == Outcome::Solved {
-                            self.consider(&mut best, &mut clean, cfg.clean_floor);
+                            self.consider(&mut best, &mut clean, cfg);
                             break 'hunt;
                         }
                         budget = (budget * 2).min(cfg.max_budget);
@@ -397,7 +420,7 @@ impl<'a> Solver<'a> {
                 let outcome = self.attempt(floor, budget, seed, global_deadline);
                 total_nodes += self.nodes;
                 if outcome == Outcome::Solved {
-                    self.consider(&mut best, &mut clean, cfg.clean_floor);
+                    self.consider(&mut best, &mut clean, cfg);
                 }
                 budget = (budget * 2).min(cfg.max_budget);
                 // reset budget growth each full cycle so every floor gets small
@@ -420,7 +443,7 @@ impl<'a> Solver<'a> {
                 let worth = clean.as_ref().is_none_or(|c| c.mean_score < b.mean_score);
                 if worth {
                     if let Some(rep) = self.repair(b, cfg) {
-                        if clean.as_ref().is_none_or(|c| rep.mean_score > c.mean_score) {
+                        if clean.as_ref().is_none_or(|c| Self::better_clean(&rep, c)) {
                             clean = Some(rep);
                         }
                     }
@@ -436,6 +459,7 @@ impl<'a> Solver<'a> {
                     mean_score,
                     min_score,
                     iffy_count,
+                    weak_count,
                     fill,
                 } = b;
                 SolveResult {
@@ -447,6 +471,7 @@ impl<'a> Solver<'a> {
                     mean_score: Some(mean_score),
                     min_score: Some(min_score),
                     iffy_count: Some(iffy_count),
+                    weak_count: Some(weak_count),
                     fill: Some(fill),
                     clean,
                 }
@@ -460,24 +485,33 @@ impl<'a> Solver<'a> {
                 mean_score: None,
                 min_score: None,
                 iffy_count: None,
+                weak_count: None,
                 fill: None,
                 clean: None,
             },
         }
     }
 
+    /// Clean-track ordering: fewest weak (sub-`weak_bar`) entries first, mean
+    /// as the tie-break. With the bar disabled both counts are 0 and this
+    /// degenerates to pure mean.
+    fn better_clean(a: &SolvedFill, b: &SolvedFill) -> bool {
+        a.weak_count < b.weak_count || (a.weak_count == b.weak_count && a.mean_score > b.mean_score)
+    }
+
     /// Fold the just-solved fill into the running bests: overall (highest
-    /// mean) and clean (highest mean among fills whose min >= `clean_floor`).
+    /// mean) and clean (fewest weak, then highest mean, among fills whose
+    /// min >= `clean_floor`).
     fn consider(
         &self,
         best: &mut Option<SolvedFill>,
         clean: &mut Option<SolvedFill>,
-        clean_floor: u8,
+        cfg: &SolveConfig,
     ) {
-        let s = self.snapshot_solution();
-        if clean_floor > 0
-            && s.min_score >= clean_floor
-            && clean.as_ref().is_none_or(|c| s.mean_score > c.mean_score)
+        let s = self.snapshot_solution(cfg.weak_bar);
+        if cfg.clean_floor > 0
+            && s.min_score >= cfg.clean_floor
+            && clean.as_ref().is_none_or(|c| Self::better_clean(&s, c))
         {
             *clean = Some(s.clone());
         }
@@ -486,12 +520,13 @@ impl<'a> Solver<'a> {
         }
     }
 
-    fn snapshot_solution(&self) -> SolvedFill {
+    fn snapshot_solution(&self, weak_bar: u8) -> SolvedFill {
         // Quality stats (mean/min/iffy) are computed over the SEARCHED entries
         // only — locked theme answers are a given, not a measure of fill skill.
         let mut total = 0u32;
         let mut min_s = 100u8;
         let mut iffy = 0usize;
+        let mut weak = 0usize;
         let mut fill = Vec::with_capacity(self.p.entries.len());
         for ei in 0..self.p.entries.len() {
             if self.is_locked[ei] {
@@ -504,6 +539,9 @@ impl<'a> Solver<'a> {
             min_s = min_s.min(sc);
             if sc < 50 {
                 iffy += 1;
+            }
+            if weak_bar > 0 && sc < weak_bar {
+                weak += 1;
             }
             fill.push((ei, ld.word_string(w), sc));
         }
@@ -518,6 +556,7 @@ impl<'a> Solver<'a> {
             fill,
             min_score: if self.n_searchable == 0 { 100 } else { min_s },
             iffy_count: iffy,
+            weak_count: weak,
         }
     }
 
@@ -587,6 +626,7 @@ impl<'a> Solver<'a> {
             stop_on_first: true, // any region solve is clean by construction
             clean_floor: cfg.clean_floor,
             repair_max_weak: 0, // no recursive repair
+            weak_bar: cfg.weak_bar,
         });
         let letters = r.letters?;
         let inner_fill = r.fill?;
@@ -602,6 +642,7 @@ impl<'a> Solver<'a> {
         let mut total = 0u32;
         let mut min_s = 100u8;
         let mut iffy = 0usize;
+        let mut weak_n = 0usize;
         let mut fill = Vec::with_capacity(n);
         for (ei, slot) in by_entry.iter_mut().enumerate() {
             if self.is_locked[ei] {
@@ -612,6 +653,9 @@ impl<'a> Solver<'a> {
             min_s = min_s.min(sc);
             if sc < 50 {
                 iffy += 1;
+            }
+            if cfg.weak_bar > 0 && sc < cfg.weak_bar {
+                weak_n += 1;
             }
             fill.push((ei, ans, sc));
         }
@@ -630,6 +674,7 @@ impl<'a> Solver<'a> {
             mean_score: total as f64 / ns as f64,
             min_score: if self.n_searchable == 0 { 100 } else { min_s },
             iffy_count: iffy,
+            weak_count: weak_n,
             fill,
         })
     }
@@ -1051,6 +1096,7 @@ DOG;40
             mean_score: 475.0 / 6.0,
             min_score: 50,
             iffy_count: 0,
+            weak_count: 1, // ORE;50 under the default bar
             fill,
         }
     }
@@ -1114,6 +1160,7 @@ DOG;40
             mean_score: 395.0 / 5.0,
             min_score: 50,
             iffy_count: 0,
+            weak_count: 1, // ORE;50 under the default bar
             fill: vec![
                 (e(1, 0, Dir::Across), "ORE".to_string(), 50),
                 (e(2, 0, Dir::Across), "TEN".to_string(), 75),
