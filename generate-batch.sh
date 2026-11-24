@@ -22,10 +22,10 @@
 # Failure mode: by default an individual puzzle's failure is logged and the
 # batch continues. Pass --abort-on-fail to bail on first error.
 #
-# QA is OFF by default in batch mode (per project preference). The fill
-# engine already guarantees a solvable puzzle; QA only adds quality findings,
-# which aren't acted on in batch context anyway. Opt in with --qa if you
-# want verdict snapshots.
+# QA is OFF by default, as in run-pipeline.sh. The fill engine already
+# guarantees a solvable puzzle and its gates catch weak fill and duplicate
+# roots; QA only adds editorial findings, which aren't acted on in batch
+# context anyway. Opt in with --qa if you want verdict snapshots.
 
 # Same rationale as run-pipeline.sh: bash 3.2's empty-array-under-set-u
 # behavior causes silent subshell aborts; we stick to -eo and validate
@@ -41,7 +41,7 @@ OUT_DIR="$ROOT/out"
 START=""
 PATTERN=""
 TIERS=""
-QA=0                  # 0 = pass --no-qa to run-pipeline.sh (default cheap mode)
+QA=0                  # 1 = pass --qa to run-pipeline.sh (off by default)
 EXPLAIN=1             # 1 = pass --explain to run-pipeline.sh
 EXPLAIN_MODEL=""
 MAX_IFFY=""
@@ -63,7 +63,7 @@ Required:
                              Tier set; uniform across the batch. Passed through to run-pipeline.sh.
 
 Optional:
-  --qa                       Run editorial QA on each puzzle (default: OFF in batch — cheaper).
+  --qa                       Run editorial QA on each puzzle (default: off, as in run-pipeline.sh).
   --no-explain               Skip the post-solve explainer (default: ON).
   --explain-model <id>       Override the explainer's model (default: claude-haiku-4-5).
   --max-iffy N               Pass-through fill-quality lever.
@@ -201,7 +201,7 @@ for (( i=0; i<NUM_PUZZLES; i++ )); do
   # Build args for run-pipeline.sh
   puzzle_seed=$((BASE_SEED + i))
   args=(--mode themeless --size "$size" --tiers "$TIERS" --name "$name" --date "$date" --seed "$puzzle_seed")
-  [[ "$QA" -eq 0 ]] && args+=(--no-qa)
+  [[ "$QA" -eq 1 ]] && args+=(--qa)
   [[ "$EXPLAIN" -eq 1 ]] && args+=(--explain)
   [[ -n "$EXPLAIN_MODEL" ]] && args+=(--explain-model "$EXPLAIN_MODEL")
   [[ -n "$MAX_IFFY" ]] && args+=(--max-iffy "$MAX_IFFY")

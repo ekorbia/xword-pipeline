@@ -1,17 +1,18 @@
 #!/usr/bin/env bash
 #
-# run-pipeline.sh — generate a crossword, clue it, and editorially review it.
-# Runs the pipeline end-to-end THROUGH the QA step. Fixing/revising findings is
-# a manual step afterward (see README.md → "Fixing QA findings").
+# run-pipeline.sh — generate a crossword and clue it. The editorial QA review
+# is opt-in (--qa). Fixing/revising its findings is a manual step afterward
+# (see README.md → "Fixing QA findings").
 #
 #   ./run-pipeline.sh --mode themeless --blocks 36 --day Saturday
 #   ./run-pipeline.sh --mode themeless --size 5 --day Easy        # 5x5 mini
 #   ./run-pipeline.sh --mode themeless --tiers easy,medium,hard --explain
 #       # ↑ multi-tier (3 clue sets) + post-solve explainer, one command
 #   ./run-pipeline.sh --mode themed --themes WAITINGFORGODOT,ROCKETSCIENCE,TROMBONE
+#   ./run-pipeline.sh --mode themeless --qa                       # + editorial QA review
 #
 # All generated JSON lands under out/{libraries,puzzles}. Requires
-# ANTHROPIC_API_KEY for the clue + qa steps (the grid step is free/offline).
+# ANTHROPIC_API_KEY for the Claude steps (the grid step is free/offline).
 
 # NB: deliberately NOT using `-u` (nounset). On macOS bash 3.2, expanding an
 # empty array under `set -u` (e.g. `"${EXPLAIN_MODEL_ARGS[@]}"` when no
@@ -48,7 +49,7 @@ THEMES=""          # comma-separated, required for --mode themed
 TIERS=""           # comma-separated subset of {easy,medium,hard}; empty = single-tier (today)
 EXPLAIN=0          # 1 → also run the post-solve explainer
 EXPLAIN_MODEL=""   # override model for the explain pass (default: explainer's own default — Haiku 4.5)
-NO_QA=0            # 1 → skip the editorial QA step
+NO_QA=1            # 0 → run the editorial QA step (opt in with --qa; off by default)
 SEED=$(date +%s)   # RNG seed for grid generation. Defaults to current epoch (each invocation produces a distinct library). Pass --seed N to reproduce a prior run deterministically.
 NAME=""            # output-file prefix override (default: <mode>-grid<GRID>; e.g. puzzle-2026-06-09 in batch use)
 DATE=""            # YYYY-MM-DD; auto-derives NAME=puzzle-<DATE> if NAME unset, and is appended to the import-puzzle hint
@@ -77,13 +78,14 @@ Usage: run-pipeline.sh [options]
   --tiers easy,medium,hard[,expert]
                             Multi-tier: write a clue set per tier on the SAME grid (overrides --day).
                             Each tier is day-calibrated (easy=Monday, medium=Wednesday,
-                            hard=Friday, expert=Saturday) and QA runs against each tier
-                            independently. --explain still runs once against the medium
-                            (or first listed) tier — explanations are tier-agnostic.
+                            hard=Friday, expert=Saturday); with --qa, each tier's clues
+                            are reviewed independently. --explain still runs once against
+                            the medium (or first listed) tier — explanations are tier-agnostic.
   --explain                 Also run the post-solve explainer (feeds the player as --explanations).
   --explain-model <id>      Override the explainer's model (default: claude-haiku-4-5).
                             Pass claude-opus-4-7 to restore the prior, higher-cost behavior.
-  --no-qa                   Skip the editorial QA step (saves a Claude call).
+  --qa                      Also run the editorial QA review (Claude; off by default).
+                            --no-qa is still accepted and is the default.
   --name ID                 Output-file prefix (default: <mode>-grid<GRID>; e.g. "puzzle-2026-06-09"
                             for batch use — prevents file collisions across pipeline runs).
   --date YYYY-MM-DD         Auto-derives --name puzzle-<DATE> if --name unset; appended to
@@ -92,7 +94,7 @@ Usage: run-pipeline.sh [options]
   -h, --help                Show this help
 
 Output: out/libraries/<grid|theme>-library.json, out/puzzles/<name>.clued[.<tier>].json,
-        out/puzzles/<name>.qa.json, out/puzzles/<name>.explained.json
+        out/puzzles/<name>.qa.json (with --qa), out/puzzles/<name>.explained.json
 EOF
 }
 
@@ -315,6 +317,7 @@ while [[ $# -gt 0 ]]; do
     --tiers) TIERS="$2"; shift 2 ;;
     --explain) EXPLAIN=1; shift ;;
     --explain-model) EXPLAIN_MODEL="$2"; shift 2 ;;
+    --qa) NO_QA=0; shift ;;
     --no-qa) NO_QA=1; shift ;;
     --seed) SEED="$2"; shift 2 ;;
     --name) NAME="$2"; shift 2 ;;
@@ -448,7 +451,7 @@ echo "    library: $LIB ($COUNT clean grids)"
 # ---- Claude steps need a key ----
 if [[ -z "${ANTHROPIC_API_KEY:-}" ]]; then
   echo "" >&2
-  echo "Grid library is ready, but ANTHROPIC_API_KEY is not set — skipping clue + qa." >&2
+  echo "Grid library is ready, but ANTHROPIC_API_KEY is not set — skipping the Claude steps." >&2
   echo "Export your key and re-run, or clue manually (see README)." >&2
   exit 1
 fi

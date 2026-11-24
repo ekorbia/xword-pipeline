@@ -81,6 +81,12 @@
 - **Supplemental wordlist** support to broaden the fill engine's vocabulary.
 
 ### Changed
+- **QA is opt-in.** `run-pipeline.sh` no longer runs the editorial review by
+  default; pass `--qa` (`--no-qa` is still accepted and matches the default).
+  `generate-batch.sh --qa` passes it through to every puzzle. The fill gates
+  and the deterministic answer-in-clue check run either way.
+- **Clue writing and revision default to Sonnet 5.** A blind eval put it at
+  parity with Opus at ~0.6× the cost; QA stays on Opus 4.7.
 - **Size-aware difficulty defaults.** A bare themeless mini (≤7) now clues at
   Monday and a midi (8–12) at Wednesday; full-size themeless keeps the Saturday
   default (themed unchanged at Wednesday). The interactive wizard's suggested

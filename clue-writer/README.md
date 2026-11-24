@@ -2,8 +2,8 @@
 
 The **Claude layer** of the crossword pipeline. The Claude-powered tools are all
 built on the official `@anthropic-ai/sdk` (per-step models live in
-`src/models.ts`: Opus 4.7 for clue/QA, Opus 4.8 for theme ideation, Haiku 4.5
-for the explainer), adaptive thinking, `effort: high`, prompt-cached system
+`src/models.ts`: Sonnet 5 for clue writing and revision, Opus 4.7 for QA,
+Opus 4.8 for theme ideation, Haiku 4.5 for the explainer), adaptive thinking, `effort: high`, prompt-cached system
 prompts, and structured (zod) output. A final `export` step is a pure-local
 converter (no API key) that turns a finished puzzle into distribution formats:
 
@@ -77,8 +77,8 @@ get rewritten; grid-level findings (weak `fill`, duplicate answers) are reported
 as **`unresolved`** — those need a different grid, not a re-clue.
 
 ```bash
-npm run clue -- ../out/puzzles/grid-library.clued.saturday.json \
-               --revise ../out/puzzles/grid-library.clued.saturday.qa.json
+npm run clue -- ../out/puzzles/grid-library.clued.expert.json \
+               --revise ../out/puzzles/grid-library.clued.expert.qa.json
 ```
 
 | Flag | Description |
@@ -102,7 +102,7 @@ difficulty findings are judged per size — a 5×5 clued for Wednesday is graded
 a Wednesday-worded mini, not against mid-week 15×15 expectations.
 
 ```bash
-npm run qa -- ../out/puzzles/grid-library.clued.saturday.json
+npm run qa -- ../out/puzzles/grid-library.clued.expert.json
 npm run qa -- examples/sample-clued.json --dry-run
 ```
 

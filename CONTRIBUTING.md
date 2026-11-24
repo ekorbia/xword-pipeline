@@ -58,7 +58,7 @@ the Rust/Node versions you're running.
 
 ## Cost note for AI-related changes
 
-The Claude steps cost real money (a few cents per call on Claude Opus 4.7). If
+The Claude steps cost real money (a few cents per call on Sonnet 5 or Opus 4.7). If
 you're iterating on a prompt or pipeline change, always test with `--dry-run`
 first; only spend tokens to verify behavior at the end.
 
